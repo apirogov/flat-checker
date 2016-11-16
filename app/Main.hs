@@ -217,6 +217,10 @@ printRun g f r = forM_ r (\(i,b,c,f,ls) -> do
   putStrLn $ show i ++ " " ++ lsym ++ " " ++ lcnt ++ "\t" ++ lbls
   ) where isfs = M.fromList $ map (\(a,b)->(b,a)) $ M.toList $ listAllSubformulas f
 
+findAndPrint g f n = do
+  r <- fromJust <$> findRun g f n
+  printRun g f r
+
 main :: IO ()
 main = print =<< findRun g f 10
 
