@@ -1,11 +1,13 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
-module Lib where
+module Types where
 import Data.Maybe (catMaybes)
 import Data.Ratio
 import Data.Map (Map)
 import Data.Set (Set)
+import Data.IntSet (IntSet)
 import qualified Data.Map as M
 import qualified Data.Set as S
+import qualified Data.IntSet as IS
 import Data.List (sortOn)
 import Data.Data
 import Control.Monad.State
@@ -20,12 +22,12 @@ import qualified Data.Vector as V
 data Formula a = Prop a | And (Formula a) (Formula a) | Or (Formula a) (Formula a)
                | Not (Formula a) | Next (Formula a) | Until (Ratio Int) (Formula a) (Formula a)
                deriving (Eq,Ord,Data)
-until1 = Until 1 --normal until
+until1 = Until 1 --normal until, for convenient infix usage
 
 instance Data a => Plated (Formula a)
 makePrisms ''Formula
 
--- custom Show instance for prettyprinting
+-- custom Show instance for prettyprinting. same format is accepted by parseFormula
 instance Show a => Show (Formula a) where
   show (Prop p) = if c == '\'' || c=='\"' then init $ tail $ show p else show p
     where c = head (show p)
@@ -35,8 +37,6 @@ instance Show a => Show (Formula a) where
   show (Or f g) = "("++show f ++ "|" ++ show g++")"
   show (Until r f g) = "("++show f++"U"++rat++show g++")"
     where rat = if r<1 then "["++show (numerator r)++"/"++show (denominator r)++"]" else ""
-
--- TODO: write parser with parsec?
 
 type CollectState a = State (Int, Map (Formula a) Int) ()
 addFormula :: Ord a => Formula a -> CollectState a
@@ -63,15 +63,16 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 isLocal :: Data a => Formula a -> Bool
 isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
 
-type Graph a = Vector (Set a, Vector Int)
+-- a graph is just a adj. list decorated with proposition sets
+type Graph a = Vector (Set a, IntSet)
 
 -- a directed adj. list for kripke structure graph, start node implicitly has id 0
-readGraph :: Ord a => [([a],[Int])] -> Graph a
-readGraph l = V.fromList $ map (\(ps,ns) -> (S.fromList ps, V.fromList ns)) l
+toGraph :: Ord a => [([a],[Int])] -> Graph a
+toGraph l = V.fromList $ map (\(ps,ns) -> (S.fromList ps, IS.fromList ns)) l
 
 -- is there an edge from i to j in g?
 hasEdge :: Graph a -> (Int,Int) -> Bool
-g `hasEdge` (i,j) = j `V.elem` next g i
+g `hasEdge` (i,j) = j `IS.member` next g i
 
 -- return the vertex ids
 nodes :: Graph a -> [Int]
@@ -79,7 +80,7 @@ nodes g = [0..length g-1]
 -- return a complete list of edges
 edges :: Graph a -> [(Int,Int)]
 edges g = concatMap (\(i,l)->zip (replicate (length l) i) l)
-        $ zip [0..(length g - 1)] $ V.toList $ fmap (V.toList.snd) g
+        $ zip [0..(length g - 1)] $ V.toList $ fmap (IS.toList . snd) g
 
 -- does vertex i of g contain p as proposition?
 hasProp g i p = p `S.member` props g i

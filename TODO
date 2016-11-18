@@ -1,0 +1,12 @@
+Current approach leads to **4 blowup of formulae depending on schema size
+
+new approach:
+
+find simple loops, get their lengths, give them ids (map ids to lengths, store them)
+loopid = enum value telling loop size
+looptype = two bools encoding begin, end, in, out
+
+use propagation for loop length and within/outside of loop stuff
+
+
+-> reduce int usage (search domain), reduce nested quantification
