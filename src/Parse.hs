@@ -5,6 +5,7 @@ module Parse (
 import Types
 
 import Data.Ratio ((%))
+import Data.Maybe (catMaybes)
 import qualified Data.Set as S
 import qualified Data.IntSet as IS
 import qualified Data.Vector as V
@@ -12,8 +13,11 @@ import Data.List (sort, sortOn, nub)
 import Text.Parsec hiding (State)
 import Text.Parsec.String (Parser)
 
+spc :: Parser ()
+spc = many (oneOf " \t") *> pure () -- space but not newline
+
 sym :: String -> Parser ()
-sym x = spaces *> string x *> spaces
+sym x = spc *> string x *> spc
 
 parse' :: Parser a -> String -> String -> Maybe a
 parse' p f s = either (const Nothing) Just $ parse p f s
@@ -51,7 +55,7 @@ parseFormula str = parse' (ltlformula <* eof) "<formula>" str
 -- parser for graph
 graph :: Parser (Graph Char)
 graph = do
-  nodedefs <- sortOn fst <$> many node <* eof
+  nodedefs <- sortOn fst . catMaybes <$> many gline <* eof
   let nodeids = map fst nodedefs
       maxnode = maximum (maximum (-1:nodeids):map (IS.findMax . snd . snd) nodedefs)
   if (length . nub . sort $ nodeids) < length nodeids
@@ -59,10 +63,11 @@ graph = do
   else if maxnode == -1
   then error $ "Parse error: Graph looks empty!"
   else return $ (V.replicate (maxnode+1) (S.empty, IS.empty)) V.// nodedefs
-  where node = (,) <$> (spc *> parseint <* spc) <*> ( (,) <$> (option S.empty propset) <*> (sym "->" *> succlist) )
+  where node = Just <$> ( (,) <$> (parseint <* spc) <*> ( (,) <$> (option S.empty propset) <*> (sym "->" *> succlist) ) )
         propset = S.fromList <$> (sym "{" *> ((lower <* spc) `sepBy` (char ',' *> spc)) <* char '}')
-        succlist = IS.fromList <$> ((parseint <* spc) `sepBy1` (char ',' *> spc)) <* newline
-        spc = many (oneOf " \t") -- space but not newline
+        succlist = IS.fromList <$> ((parseint <* spc) `sepBy1` (char ',' *> spc)) <* endOfLine
+        comment = char '#' *> many (noneOf "\r\n") *> endOfLine *> pure Nothing
+        gline = spc *> (node <|> comment)
 
 -- parser for labelled adj. graph
 parseGraph :: String -> String -> Maybe (Graph Char)

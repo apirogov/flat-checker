@@ -3,8 +3,6 @@ import System.IO (hSetBuffering, BufferMode(..), stdout)
 import System.Directory (doesFileExist)
 import Options.Applicative
 
-import Data.Ratio
-
 import Types
 import Parse
 import Solve
@@ -48,13 +46,13 @@ main = do
     Just f -> do
       case mg of
         Nothing -> putStrLn "Error: Could not load graph from file."
-        Just g  -> findAndPrint g f (argMaxSchemaSize args)
+        Just g  -> findAndPrint g f (argMaxSchemaSize args) (argVerbose args)
 
 -- this is also useful in the ghci REPL
-findAndPrint :: Graph Char -> Formula Char -> Int -> IO ()
-findAndPrint g f n = do
+findAndPrint :: Graph Char -> Formula Char -> Int -> Bool -> IO ()
+findAndPrint g f n v = do
   hSetBuffering stdout LineBuffering
-  r <- findRun g f n
+  r <- findRun g f n v
   case r of
     Just run -> putStrLn "Solution:" >> printRun f run
     Nothing -> putStrLn "No solution found."

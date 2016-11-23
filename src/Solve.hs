@@ -106,12 +106,12 @@ isOneOfLT ls p = mkOr =<< mapM (flip isLtype p) ls
 
 -- input: graph structure, ltl formula, path schema length
 -- output: valid run if possible
-findRun :: Graph Char -> Formula Char -> Int -> IO (Maybe Run)
-findRun g f n = evalZ3 $ do
+findRun :: Graph Char -> Formula Char -> Int -> Bool -> IO (Maybe Run)
+findRun g f n v = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
   start1 <- liftIO $ getTime Monotonic
-  liftIO $ putStrLn "Building constraints..."
+  when v $ liftIO $ putStrLn "Building constraints..."
 
   -- create a few constant elements
   _T <- mkTrue
@@ -288,15 +288,15 @@ findRun g f n = evalZ3 $ do
   -------------------------------------------------------------------------------------------------------------------------------
   -- extract satisfying model from Z3 if possible
   end1 <- liftIO $ getTime Monotonic
-  liftIO $ putStrLn $ "Build constraints: " ++ showTime start1 end1
-  -- TODO: add more stats about vars used
-  st <- T.pack <$> solverToString
-  let countInts = length $ T.breakOnAll (T.pack "Int") st
-  let countBools = length $ T.breakOnAll (T.pack "Bool") st
-  liftIO $ putStrLn $ "Formula size: " ++ show (T.length st) ++ " Ints: " ++ show countInts ++ " Bools: " ++ show countBools
+  when v $ do
+    liftIO $ putStrLn $ "Build constraints: " ++ showTime start1 end1
+    st <- T.pack <$> solverToString
+    let countInts = length $ T.breakOnAll (T.pack "Int") st
+    let countBools = length $ T.breakOnAll (T.pack "Bool") st
+    liftIO $ putStrLn $ "Formula size: " ++ show (T.length st) ++ " Ints: " ++ show countInts ++ " Bools: " ++ show countBools
 
   start2 <- liftIO $ getTime Monotonic
-  liftIO $ putStrLn "Searching..."
+  when v $ liftIO $ putStrLn "Searching..."
   result <- fmap snd $ withModel $ \m -> do
     let getVec :: EvalAst Z3 a -> Vector AST -> Z3 (Vector a)
         getVec evalfunc vec = fromMaybe V.empty <$> mapEval evalfunc m vec
@@ -333,7 +333,7 @@ findRun g f n = evalZ3 $ do
       , posGrd = V.zip (gvals1 V.! i) (gvals2 V.! i)
       })
   end2 <- liftIO $ getTime Monotonic
-  liftIO $ putStrLn $ "Finished after: "++showTime start2 end2
+  when v $ liftIO $ putStrLn $ "Finished after: "++showTime start2 end2
   return result
 
 -- helper: return time difference between a and b
