@@ -111,7 +111,7 @@ findRun g f n = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
   start1 <- liftIO $ getTime Monotonic
-  liftIO $ putStrLn "Building model..."
+  liftIO $ putStrLn "Building constraints..."
 
   -- create a few constant elements
   _T <- mkTrue
@@ -293,8 +293,7 @@ findRun g f n = evalZ3 $ do
   st <- T.pack <$> solverToString
   let countInts = length $ T.breakOnAll (T.pack "Int") st
   let countBools = length $ T.breakOnAll (T.pack "Bool") st
-  liftIO $ putStrLn $ "Formula size: " ++ show (T.length st)
-  liftIO $ putStrLn $ "Ints: " ++ show countInts ++ " Bools: " ++ show countBools
+  liftIO $ putStrLn $ "Formula size: " ++ show (T.length st) ++ " Ints: " ++ show countInts ++ " Bools: " ++ show countBools
 
   start2 <- liftIO $ getTime Monotonic
   liftIO $ putStrLn "Searching..."

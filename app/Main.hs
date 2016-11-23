@@ -21,7 +21,7 @@ parseArgs = Args
          <> help "fLTL-formula to check")
         <*> option auto (long "schema-size" <> short 'n' <> metavar "NUM"
          <> help "Defines the path-schema size" {- <> value 10 <> showDefault -} )
-        <*> option str (long "graph-file" <> short 'f' <> metavar "FILE"
+        <*> option str (long "graph-file" <> short 'g' <> metavar "FILE"
          <> help "File containing the graph definition" <> value "" <> showDefault)
         <*> switch (long "verbose" <> short 'v' <> help "Enable verbose server log")
 
@@ -56,5 +56,5 @@ findAndPrint g f n = do
   hSetBuffering stdout LineBuffering
   r <- findRun g f n
   case r of
-    Just run -> printRun f run
+    Just run -> putStrLn "Solution:" >> printRun f run
     Nothing -> putStrLn "No solution found."
