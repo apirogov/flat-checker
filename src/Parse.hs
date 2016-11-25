@@ -1,11 +1,12 @@
 module Parse (
   parse', ltlformula, graph, parseFormula, parseGraph
+  , graphFromFile, formula
 ) where
 
 import Types
 
 import Data.Ratio ((%))
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromJust)
 import qualified Data.Set as S
 import qualified Data.IntSet as IS
 import qualified Data.Vector as V
@@ -73,3 +74,12 @@ graph = do
 parseGraph :: String -> String -> Maybe (Graph Char)
 parseGraph filename str = parse' graph filename' str
   where filename' = if null filename then "<stdin>" else filename
+
+----------------------------
+
+-- helpers for REPL, unsafe!
+
+formula = fromJust . parseFormula
+
+graphFromFile :: String -> IO (Graph Char)
+graphFromFile f = readFile f >>= return . fromJust . parseGraph f

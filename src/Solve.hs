@@ -1,10 +1,11 @@
 module Solve (
-  findRun, printRun
+  findRun, showRun
 ) where
 import System.Clock
 
+import Data.Ratio
 import Data.Maybe
-import Data.List (intercalate)
+import Data.List (sortOn, intercalate, transpose)
 import qualified Data.Map as M
 import Data.Vector (Vector)
 import qualified Data.Vector as V
@@ -13,6 +14,8 @@ import qualified Data.Text as T
 import Z3.Monad
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
+
+import qualified Text.PrettyPrint.Boxes as B
 
 import Types
 
@@ -51,10 +54,6 @@ varname pref ind = intercalate "_" $ pref:(map show ind)
 -- helper: a /= b
 mkNeq a b = mkNot =<< mkEq a b
 
--- helper: f + n = g
-isInc :: Integer -> AST -> AST -> Z3 AST
-isInc n f g = join $ mkEq g <$> (mkAdd =<< sequence [mkInteger $ fromIntegral n, pure f])
-
 -- sugar, expand quantifiers over variables
 mkForallI [] _ = mkTrue
 mkForallI ind f = mkAnd =<< forM ind f
@@ -84,7 +83,7 @@ data PosVars = PosVars {
                , posUpd :: Vector Bool
                , posGrd :: Vector (Bool,Bool)
                } deriving (Show, Eq)
-type Run = Vector PosVars
+type Run = [PosVars]
 
 -- loop type enum, represented in formulae as 2 booleans per value
 data LoopType = Out | Start | End | In deriving (Show,Eq)
@@ -110,8 +109,15 @@ findRun :: Graph Char -> Formula Char -> Int -> Bool -> IO (Maybe Run)
 findRun g f n v = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
-  start1 <- liftIO $ getTime Monotonic
-  when v $ liftIO $ putStrLn "Building constraints..."
+
+  log "Enumerating simple cycle lengths..."
+  start0 <- currTime
+  let lens = calcValidCycleLengths g     -- valid loop lens (use johnson on g!)
+  end0 <- currTime
+  log $ "Found lengths " ++ show lens ++ " in: " ++ showTime start0 end0
+
+  log "Building constraints..."
+  start1 <- currTime
 
   -- create a few constant elements
   _T <- mkTrue
@@ -121,7 +127,6 @@ findRun g f n v = evalZ3 $ do
   _1 <- mkInteger 1
   _n <- mkInteger $ fromIntegral n  -- constant n = number of states in path schema
   let indices = [0..n-1]            -- helper to quantify over indices of variables
-  let lens = calcCycleLengths g     -- valid loop lens (use johnson on g!)
   let ge = edges g                  -- get directed edges of graph
 
   (mkFreshNodeVar, evalNid, nid) <- getNidSort (nodes g)
@@ -137,7 +142,7 @@ findRun g f n v = evalZ3 $ do
   -- variables to act as loop counters for the run, decorating nodes that are part of aloop
   lcnt <- mkVarVec mkFreshIntVar "lct" indices
   -- loop start propagation
-  lst <- mkVarVec mkFreshNodeVar "lst" indices
+  lst  <- mkVarVec mkFreshNodeVar "lst" indices
   -- loop length counter
   lctr <- mkVarVec mkFreshIntVar "lctr" indices
   -- loop length indicator (derived from lctr)
@@ -151,15 +156,14 @@ findRun g f n v = evalZ3 $ do
   -- to correctly label the rational untils, we need to employ the counters
   -- each state of the path has an own counter per ratio-U subformula which is firstly updated there
   -- there are 2 guards per counter: <0, >=0. both can be on the incoming edge of a node
-  let untils = getEvilUntils f
+  let untils = getEvilUntils sfs
   let numUntils = length untils
   -- per state and U-formula: one counter flag, two incoming guard flags
-  -- dimensions: i=current schema state, j=number U-formula counter, guards: <0, >=0
-  uctrs <- mkVarMat mkFreshIntVar "uctr" indices [1..numUntils]
-  updates <- mkVarMat mkFreshBoolVar "upd" indices [1..numUntils]
+  -- dimensions: i=current schema state, j=number U-formula counter, guards: 1: >=0, 2: <0
+  uctrs   <- mkVarMat mkFreshIntVar  "uctr" indices [1..numUntils]
+  updates <- mkVarMat mkFreshBoolVar "upd"  indices [1..numUntils]
   guards1 <- mkVarMat mkFreshBoolVar "grd1" indices [1..numUntils]
   guards2 <- mkVarMat mkFreshBoolVar "grd2" indices [1..numUntils]
-  let guards = V.zip guards1 guards2
 
   -------------------------------------------------------------------------------------------------------------------------------
   -- always start path at node 0...
@@ -176,8 +180,15 @@ findRun g f n v = evalZ3 $ do
   -- we want the complete formula to be satisfied, i.e. total formula labeled at first node (the node with id 0)
   assert =<< mkEq (V.last $ labels V.! 0) _T
 
+  -- all until phi freq. counters start at 0
+  assert =<< mkForallI (M.toList untils) (\(_,j) -> mkEq ((uctrs V.! 0) V.! j) _0)
+
+  -- helper: f shall hold with one of the valid loop lengths
   let withLoopLen i f = mkExistsI lens (\l -> mkAnd =<< sequence [join $ mkEq (llen V.! i) <$> (mkInteger $ fromIntegral l), f l])
-  let lbl i j = ((labels V.! i) V.! j)
+
+  let at var i j = (var V.! i) V.! j -- helper: access 2-indexed variable
+  let isInc n f g = join $ mkEq g <$> (mkAdd =<< sequence [mkInteger $ fromIntegral n, pure f]) -- helper: f + n = g
+  let lbl = at labels
   assert =<< mkForallI indices (\i-> mkAnd =<< sequence [
       -- enforce looptype structure (Out | Start (In*) End)*(Start (In*) End)
       ifT (i>0 && i<n-1) $ mkAnd =<< sequence (map join [
@@ -197,10 +208,12 @@ findRun g f n v = evalZ3 $ do
     , ifT (i<n-1) $ join $ mkImplies <$> isLtype End (lt V.! i) <*> mkLt _1 (lcnt V.! i)
       -- loop count = 1 <-> outside of loop
     , join $ mkIff <$> isLtype Out (lt V.! i) <*> mkEq (lcnt V.! i) _1
-      -- consistent loopcount inside loops
-    , ifT (i>0 && i<n-1) $ join $ mkImplies <$> isLtype In (lt V.! i) <*> (mkAnd =<< sequence [
-                                                mkEq (lcnt V.! i) (lcnt V.! (i+1)),
-                                                mkEq (lcnt V.! i) (lcnt V.! (i-1))])
+      -- consistent loopcount in loops
+    , ifT (i>0 && i<n-1) $ mkAnd =<< sequence [
+        join $ mkImplies <$> isLtype Start (lt V.! i) <*> (mkEq (lcnt V.! i) (lcnt V.! (i+1)))
+      , join $ mkImplies <$> isLtype End   (lt V.! i) <*> (mkEq (lcnt V.! i) (lcnt V.! (i-1)))
+      , join $ mkImplies <$> isLtype In    (lt V.! i) <*> (mkAnd =<< sequence [ mkEq (lcnt V.! i) (lcnt V.! (i+1)), mkEq (lcnt V.! i) (lcnt V.! (i-1))])
+      ]
 
       -- propagate start id
     , mkAnd =<< sequence [ join $ mkImplies <$> (isLtype Start (lt V.! i)) <*> (mkEq (lst V.! i) (ids V.! i)) --take loop start id at start from curr id
@@ -245,6 +258,32 @@ findRun g f n v = evalZ3 $ do
         , mkForallI (M.toList sfs) (\(_,j) -> mkEq (lbl i j) (lbl (i+l) j))
         ])))
 
+    -- enforce correct updates, corresponding counter states and interaction with guards for the evil untils
+    , mkForallI (M.toList untils) (\((Until r f g), j) -> do
+      let (phi, psi) = (fromJust $ M.lookup f sfs, fromJust $ M.lookup g sfs)
+          (m, n) = (numerator r, denominator r)
+          isMulAdd f n v g = join $ mkEq g <$> (mkAdd =<< sequence [mkMul =<< sequence [mkInteger $ fromIntegral n, pure v], pure f]) -- helper: f + n*v = g
+      mkAnd =<< sequence [
+          -- set corresponding updates. 0 = negative (-m) if phi does not hold, 1 = positive (n-m) if phi does hold
+          mkIff (at updates i j) (at labels i phi)
+
+          -- guard related constraints:
+        , join $ mkImplies (at guards1 i j) <$> (mkLe _0 (at uctrs i j)) -- if guard >= 0 is set, counter must be >= 0 afterwards
+        , join $ mkImplies (at guards2 i j) <$> (mkLt (at uctrs i j) _0) -- if guard < 0 is set, counter must be < 0 afterwards
+        , join $ mkNot <$> (mkAnd [at guards1 i j, at guards2 i j])      -- both guards for same counter can not be set
+          -- no guards in loops (TODO: is this correct?)
+        , join $ mkImplies <$> (isOneOfLT [Start,In,End] (lt V.! i)) <*> (mkNot =<< mkOr [at guards1 i j, at guards2 i j])
+
+          -- counter value at i>0 = old value at i-1 + update on edge from i-i
+        , ifT (i>0) $ mkAnd =<< sequence [
+            -- positive update (proportional to number of node visits, semantically invalid inside loops, just used as accumulator there)
+            join $ mkImplies           (at updates (i-1) j) <$> isMulAdd (at uctrs (i-1) j) (n-m) (lcnt V.! (i-1)) (at uctrs i j)
+            -- negative update, same idea
+          , join $ mkImplies <$> mkNot (at updates (i-1) j) <*> isMulAdd (at uctrs (i-1) j) (-m)  (lcnt V.! (i-1)) (at uctrs i j)
+          ]
+        ]
+      )
+
     -- enforce correct labelling
     , mkForallI (M.toList sfs) (\(sf,j) -> do --for all the subformulae...
       let subf = subformulas sfs sf
@@ -278,48 +317,44 @@ findRun g f n v = evalZ3 $ do
               -- we are inside loop -> check the unrolling value and copy it
               , join $ mkImplies <$> (mkNot =<< isLtype Out (lt V.! i)) <*> (withLoopLen i $ \l -> ifF (i-2*l>=0) $ pure $ lbl (i-2*l) j)
               ]
+
           --TODO: consistency of evil until
-          _ -> mkTrue
+          Until _ _ _ -> mkTrue
       )
     ])
 
-  -- TODO: intermediate counter states, updates consistency etc
-
   -------------------------------------------------------------------------------------------------------------------------------
   -- extract satisfying model from Z3 if possible
-  end1 <- liftIO $ getTime Monotonic
-  when v $ do
-    liftIO $ putStrLn $ "Build constraints: " ++ showTime start1 end1
-    st <- T.pack <$> solverToString
-    let countInts = length $ T.breakOnAll (T.pack "Int") st
-    let countBools = length $ T.breakOnAll (T.pack "Bool") st
-    liftIO $ putStrLn $ "Formula size: " ++ show (T.length st) ++ " Ints: " ++ show countInts ++ " Bools: " ++ show countBools
+  end1 <- currTime
+  log $ "Build constraints: " ++ showTime start1 end1
+  st <- if v then T.pack <$> solverToString else pure T.empty --slow, do only in verbose mode for infos
+  let countInts = length $ T.breakOnAll (T.pack "Int") st
+  let countBools = length $ T.breakOnAll (T.pack "Bool") st
+  log $ "Formula size: " ++ show (T.length st) ++ " Ints: " ++ show countInts ++ " Bools: " ++ show countBools
 
-  start2 <- liftIO $ getTime Monotonic
-  when v $ liftIO $ putStrLn "Searching..."
+  start2 <- currTime
+  log "Searching..."
   result <- fmap snd $ withModel $ \m -> do
     let getVec :: EvalAst Z3 a -> Vector AST -> Z3 (Vector a)
         getVec evalfunc vec = fromMaybe V.empty <$> mapEval evalfunc m vec
 
-        getCtrMat :: Vector (Vector a) -> (a -> Z3 (Maybe b)) -> Z3 (Vector (Vector b))
-        getCtrMat mat f = fromMaybe V.empty . V.sequence <$> V.forM mat (\row -> V.sequence <$> V.forM row f)
+        getCtrMat :: EvalAst Z3 a -> Vector (Vector AST) -> Z3 (Vector (Vector a))
+        getCtrMat f mat = fromMaybe V.empty . V.sequence <$> V.forM mat (\row -> mapEval f m row)
 
     idvals <- getVec evalNid ids
-    lt1vals <- getVec evalBool lt1
-    lt2vals <- getVec evalBool lt2
-    let ltvals = toLtype <$> V.zip lt1vals lt2vals
+    ltvals <- fmap toLtype <$> (V.zip <$> getVec evalBool lt1 <*> getVec evalBool lt2)
     lcntvals <- getVec evalInt lcnt
     lstvals <- getVec evalNid lst
     lctrvals <- getVec evalInt lctr
     llenvals <- getVec evalInt llen
-    lblvals <- mapM (\l -> fromMaybe V.empty . V.sequence <$> mapM (evalBool m) l) labels
 
-    ucvals <- getCtrMat uctrs (evalInt m)
-    uvals <- getCtrMat updates (evalBool m)
-    gvals1 <- getCtrMat guards1 (evalBool m)
-    gvals2 <- getCtrMat guards2 (evalBool m)
+    ucvals <- getCtrMat evalInt  uctrs
+    uvals <-  getCtrMat evalBool updates
+    gvals <- fmap (uncurry V.zip) <$> (V.zip <$> getCtrMat evalBool guards1 <*> getCtrMat evalBool guards2)
 
-    return $ V.generate (length indices) (\i ->
+    lblvals <- getCtrMat evalBool labels
+
+    return $ V.toList $ V.generate (length indices) (\i ->
       PosVars {
         posId = idvals V.! i
       , posLType = ltvals V.! i
@@ -330,27 +365,49 @@ findRun g f n v = evalZ3 $ do
       , posLbls = lblvals V.! i
       , posUCtrs = ucvals V.! i
       , posUpd = uvals V.! i
-      , posGrd = V.zip (gvals1 V.! i) (gvals2 V.! i)
+      , posGrd = gvals V.! i
       })
-  end2 <- liftIO $ getTime Monotonic
-  when v $ liftIO $ putStrLn $ "Finished after: "++showTime start2 end2
+  end2 <- currTime
+  log $ "Finished after: "++showTime start2 end2
   return result
 
--- helper: return time difference between a and b
-showTime a b = show ((/1000000) . fromIntegral . abs . toNanoSecs $ b-a)++"ms"
+  where currTime = liftIO $ getTime Monotonic
+        showTime a b = show ((/1000000) . fromIntegral . abs . toNanoSecs $ b-a)++" ms" -- print time diff. of a and b
+        log = when v . liftIO . putStrLn
 
--- pretty-print the results
-printRun :: Formula Char -> Run -> IO ()
-printRun f r = forM_ r (\(PosVars i lt c st _ ll ls _ _ _)-> do
-  let lblids = map fst $ filter ((==True).snd) $ zip [0..] $ V.toList ls
-      lbls = intercalate ", " $ map show $ catMaybes $ map (flip M.lookup isfs) lblids
-      lsym Start = "<"
-      lsym End = "-"
-      lsym In = "|"
-      lsym Out = " "
-      llen = if ll/=0 then show ll else " "
-      lcnt = if c/=1 then show c else " "
-      lst = if lt==Out then " " else show st
-  putStrLn $ show i ++ " " ++ lsym lt ++ " " ++ lcnt ++ " " ++ lst ++ " " ++ llen ++ "\t" ++ lbls
-  ) where isfs = M.fromList $ map (\(a,b)->(b,a)) $ M.toList $ enumerateSubformulas f
+-- generate pretty-printed run string for output
+showRun :: Formula Char -> Run -> String
+showRun f r = B.render $ B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lcs,lst,lln], tri, lbl]
+  where mkCol name cells = (B.text name) B.// (B.vcat B.top cells)
+        addLT f p = (f p, posLType p)
+        showIfLoop (_,Out) = ""
+        showIfLoop (a,_) = show a
+        sfs = enumerateSubformulas f
 
+        ids = mkCol "ID" $ map (B.text . show . posId) r
+        lts = mkCol "LT" $ map (B.text . lsym . posLType) r
+        lcs = mkCol "LC" $ map (B.text . lcount . posLCount) r
+        lst = mkCol "LS" $ map (B.text . showIfLoop . addLT posLStart) r
+        lln = mkCol "LL" $ map (B.text . showIfLoop . addLT posLLen) r
+
+        tri = B.hsep 2 B.left $ map (B.vcat B.top) $ transpose $ iuts:(map (map (B.text . c2str) . (\p -> V.toList $ V.zip3 (posGrd p) (posUCtrs p) (posUpd p))) r)
+        iuts = map (B.text . show . fst) $ sortOn snd $ M.toList $ getEvilUntils sfs --to label columns with until formulae
+
+        lbl = mkCol "Labels" $ map (B.text . lbls . posLbls) r
+        lblids = map fst . filter ((==True).snd) . zip [0..] . V.toList
+        lbls = intercalate ", " . map show . catMaybes . map (flip M.lookup isfs) . lblids
+        isfs = M.fromList $ map (\(a,b) -> (b,a)) $ M.toList sfs --to map indices back to subformulas
+
+        -- this representation looks too noisy for big formulae:
+        -- lbl = B.hsep 1 B.left $ map (B.vcat B.top) $ transpose $ lblhdr:(map ((B.text "" :) . map (B.text . (\(a,t) -> if t then show a else "")) . zip ssfs . V.toList . posLbls) r)
+        -- ssfs = map fst $ sortOn snd $ M.toList sfs
+        -- lblhdr = B.text "Labels:" : (ssfs *> pure (B.text ""))
+
+        lsym Start = "<"
+        lsym End = "-"
+        lsym In = "|"
+        lsym Out = " "
+        lcount 1 = ""
+        lcount n = show n
+        -- pretty print counter triples (in-guard, counter value, out-update)
+        c2str ((g,l),v,u) = (if g then "[≥0] " else if l then "[<0] " else "[  ] ") ++ show v ++ (if u then " (+)" else " (-)")

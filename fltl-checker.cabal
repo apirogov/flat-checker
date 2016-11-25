@@ -27,6 +27,7 @@ library
                      , text
                      , fgl
                      , clock
+                     , boxes
                      , z3
   default-language:    Haskell2010
 

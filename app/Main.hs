@@ -54,5 +54,8 @@ findAndPrint g f n v = do
   hSetBuffering stdout LineBuffering
   r <- findRun g f n v
   case r of
-    Just run -> putStrLn "Solution:" >> printRun f run
+    Just run -> putStrLn "Solution:" >> putStrLn (showRun f run)
     Nothing -> putStrLn "No solution found."
+
+-- unsafe helper for REPL. takes filename and formula string
+unsafeSolve g f n = graphFromFile g >>= \g -> findAndPrint g (formula f) n True

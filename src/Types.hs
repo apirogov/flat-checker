@@ -1,13 +1,14 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
   Formula(..), until1, getUFrac, enumerateSubformulas, getEvilUntils, subformulas, isLocal,
-  Graph, toGraph, nodes, edges, hasEdge, hasProp, props, next, calcCycleLengths
+  Graph, toGraph, nodes, edges, hasEdge, hasProp, props, next, calcValidCycleLengths
 ) where
 import Data.Maybe (catMaybes)
 import Data.Ratio
 import Data.Map (Map)
 import Data.Set (Set)
 import Data.IntSet (IntSet)
+import Data.List (sortOn, nub)
 import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.IntSet as IS
@@ -64,8 +65,9 @@ enumerateSubformulas = snd . (flip execState (0,M.empty)) . go
   where go f = traverseOf_ plate go f *> addFormula f
 
 -- filter out the U-subformulas only
-getEvilUntils :: (Ord a,Data a) => Formula a -> Map (Formula a) Int
-getEvilUntils = M.fromList . flip zip [0..] . filter evil . filter (has _Until) . universe
+getEvilUntils :: (Ord a) => Map (Formula a) Int -> Map (Formula a) Int
+getEvilUntils = M.fromList . flip zip [0..] . filter evil . filter (has _Until)
+              . map fst . sortOn snd . M.toList
   where evil (Until 1 _ _) = False
         evil _ = True
 
@@ -103,8 +105,8 @@ props g i = fst $ g V.! i
 -- successors of vertex i of graph g
 next g i = snd $ g V.! i
 
-calcCycleLengths :: Graph a -> [Int]
-calcCycleLengths g = if hasSelfloops then 2:llens else llens -- 2 because no direct backloops are allowed
+calcValidCycleLengths :: Graph a -> [Int]
+calcValidCycleLengths g = if hasSelfloops then nub (2:llens) else llens -- selfloops must be unrolled to loops of size 2
   where g' = G.mkGraph (zip (nodes g) (repeat ())) (map (\(i,j) -> (i,j,())) (edges g)) :: G.Gr () ()
         llens = S.toList $ S.fromList $ map length $ cyclesIn' g'
         hasSelfloops = any (\(i,j) -> i==j) (edges g)
