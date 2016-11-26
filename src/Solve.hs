@@ -290,7 +290,7 @@ findRun g f n v = evalZ3 $ do
           lbl_ij_equiv_to t = join $ mkIff <$> pure (lbl i j) <*> t
       case sf of
           -- an atomic proposition holds if the chosen node contains the proposition
-          Prop p -> lbl_ij_equiv_to $ mkOr =<< forM (filter (flip (hasProp g) p) $ nodes g) (\node -> mkEq (ids V.! i) (nid V.! node))
+          Prop p -> lbl_ij_equiv_to $ mkExistsI (filter (flip (hasProp g) p) $ nodes g) (\node -> mkEq (ids V.! i) (nid V.! node))
           -- obvious
           Tru -> lbl_ij_equiv_to mkTrue
           Fls -> lbl_ij_equiv_to mkFalse
