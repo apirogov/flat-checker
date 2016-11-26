@@ -36,7 +36,11 @@ main = do
                 exf <- doesFileExist filename
                 if exf then Just <$> readFile filename
                        else putStrLn "Error: File does not exist." >> return Nothing
-  let mg = maybe Nothing (parseGraph filename) filedata
+
+  let g = maybe Nothing (parseGraph filename) filedata -- try .graph
+  mg <- case g of                                      -- then try .dot
+            Nothing -> maybe (return Nothing) parseDot filedata
+            Just gf -> return $ Just gf
 
   -- formula must be provided as argument
   let mf = parseFormula $ argFormula args

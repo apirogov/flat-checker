@@ -1,18 +1,26 @@
 module Parse (
-  parse', ltlformula, graph, parseFormula, parseGraph
-  , graphFromFile, formula
+  parse', ltlformula, graph, parseFormula, parseGraph, parseDot,
+  graphFromFile, dotFromFile, formula
 ) where
 
 import Types
 
+import Data.Function (on)
 import Data.Ratio ((%))
 import Data.Maybe (catMaybes, fromJust)
 import qualified Data.Set as S
 import qualified Data.IntSet as IS
 import qualified Data.Vector as V
-import Data.List (sort, sortOn, nub)
+import Data.List (sort, sortOn, nub, groupBy)
 import Text.Parsec hiding (State)
 import Text.Parsec.String (Parser)
+
+import qualified Data.Text.Lazy as TL
+import Data.GraphViz.Types hiding (parse)
+import Data.GraphViz (DotGraph)
+import Data.GraphViz.Attributes.Complete
+import Data.GraphViz.Exception
+import Control.Exception
 
 spc :: Parser ()
 spc = many (oneOf " \t") *> pure () -- space but not newline
@@ -75,6 +83,28 @@ parseGraph :: String -> String -> Maybe (Graph Char)
 parseGraph filename str = parse' graph filename' str
   where filename' = if null filename then "<stdin>" else filename
 
+-- load a digraph from a dot file
+parseDot :: String -> IO (Maybe (Graph Char))
+parseDot dgs = catch (Just <$> evaluate g) handle
+  where handle :: GraphvizException -> IO (Maybe (Graph Char))
+        handle _ = return Nothing
+        g = parseDot' dgs
+
+parseDot' :: String -> Graph Char
+parseDot' dgs = g''
+  where dg = parseDotGraph (TL.pack dgs) :: DotGraph Int
+        ns = graphNodes dg
+        toEdge (DotEdge f t _) = (f,t)
+        nn = 1+maximum ((-1):map nodeID ns)
+        g = V.replicate nn (S.empty, IS.empty)
+        --throw all symbols in all text labels in one set
+        at n = S.unions $ map S.fromList $ catMaybes $ map getStr $ nodeAttributes n
+        getStr (Label (StrLabel s)) = Just $ TL.unpack s
+        getStr _ = Nothing
+        g' = g V.// zip (map nodeID ns) (map (\n -> (at n, IS.empty)) ns)
+        es = map (\((f,t):ess) -> (f, (fst $ g' V.! f, IS.fromList $ t:map snd ess)) ) $ groupBy ((==) `on` fst) $ map toEdge $ graphEdges dg
+        g'' = g' V.// es
+
 ----------------------------
 
 -- helpers for REPL, unsafe!
@@ -83,3 +113,6 @@ formula = fromJust . parseFormula
 
 graphFromFile :: String -> IO (Graph Char)
 graphFromFile f = readFile f >>= return . fromJust . parseGraph f
+
+dotFromFile :: String -> IO (Graph Char)
+dotFromFile f = readFile f >>= return . parseDot'

@@ -28,6 +28,7 @@ library
                      , fgl
                      , clock
                      , boxes
+                     , graphviz
                      , z3
   default-language:    Haskell2010
 
