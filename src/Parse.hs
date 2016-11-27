@@ -76,7 +76,7 @@ graph = do
         propset = S.fromList <$> (sym "{" *> ((lower <* spc) `sepBy` (char ',' *> spc)) <* char '}')
         succlist = IS.fromList <$> ((parseint <* spc) `sepBy1` (char ',' *> spc)) <* endOfLine
         comment = char '#' *> many (noneOf "\r\n") *> endOfLine *> pure Nothing
-        gline = spc *> (node <|> comment)
+        gline = spc *> (node <|> comment <|> (endOfLine *> pure Nothing))
 
 -- parser for labelled adj. graph
 parseGraph :: String -> String -> Maybe (Graph Char)
