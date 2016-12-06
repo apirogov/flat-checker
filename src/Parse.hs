@@ -1,13 +1,12 @@
 module Parse (
-  parse', ltlformula, graph, parseFormula, parseGraph, parseDot,
-  graphFromFile, dotFromFile, formula
+  parse', ltlformula, graph, parseLoopLens, parseFormula, parseGraph, parseDot, parseDot'
 ) where
 
 import Types
 
 import Data.Function (on)
 import Data.Ratio ((%))
-import Data.Maybe (catMaybes, fromJust)
+import Data.Maybe (catMaybes)
 import qualified Data.Set as S
 import qualified Data.IntSet as IS
 import qualified Data.Vector as V
@@ -22,6 +21,10 @@ import Data.GraphViz.Attributes.Complete
 import Data.GraphViz.Exception
 import Control.Exception
 
+parseLoopLens :: String -> Either String [Int]
+parseLoopLens str = either (const $ Left "could not read supplied list of lengths") Right
+                  $ parse (parseint `sepBy1` char ',' <* eof) "<list of lengths>" str
+
 spc :: Parser ()
 spc = many (oneOf " \t") *> pure () -- space but not newline
 
@@ -31,7 +34,7 @@ sym x = spc *> string x *> spc
 parse' :: Parser a -> String -> String -> Maybe a
 parse' p f s = either (const Nothing) Just $ parse p f s
 
-parseint::Parser Int
+parseint :: Parser Int
 parseint = read <$> many1 digit
 
 ltlformula :: Parser (Formula Char)
@@ -83,13 +86,14 @@ parseGraph :: String -> String -> Maybe (Graph Char)
 parseGraph filename str = parse' graph filename' str
   where filename' = if null filename then "<stdin>" else filename
 
--- load a digraph from a dot file
+-- load a digraph from a dot file. needs IO to catch failure
 parseDot :: String -> IO (Maybe (Graph Char))
 parseDot dgs = catch (Just <$> evaluate g) handle
   where handle :: GraphvizException -> IO (Maybe (Graph Char))
         handle _ = return Nothing
         g = parseDot' dgs
 
+-- load a digraph from a dot file. unfortunately an exception can be thrown
 parseDot' :: String -> Graph Char
 parseDot' dgs = g''
   where dg = parseDotGraph (TL.pack dgs) :: DotGraph Int
@@ -102,17 +106,6 @@ parseDot' dgs = g''
         getStr (Label (StrLabel s)) = Just $ TL.unpack s
         getStr _ = Nothing
         g' = g V.// zip (map nodeID ns) (map (\n -> (at n, IS.empty)) ns)
-        es = map (\((f,t):ess) -> (f, (fst $ g' V.! f, IS.fromList $ t:map snd ess)) ) $ groupBy ((==) `on` fst) $ map toEdge $ graphEdges dg
+        es = map (\((f,t):ess) -> (f, (fst $ g' V.! f, IS.fromList $ t:map snd ess)) )
+           $ groupBy ((==) `on` fst) $ map toEdge $ graphEdges dg
         g'' = g' V.// es
-
-----------------------------
-
--- helpers for REPL, unsafe!
-
-formula = fromJust . parseFormula
-
-graphFromFile :: String -> IO (Graph Char)
-graphFromFile f = readFile f >>= return . fromJust . parseGraph f
-
-dotFromFile :: String -> IO (Graph Char)
-dotFromFile f = readFile f >>= return . parseDot'

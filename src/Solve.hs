@@ -1,8 +1,6 @@
 module Solve (
   findRun, showRun
 ) where
-import System.Clock
-
 import Data.Ratio
 import Data.Maybe
 import Data.List (sortOn, intercalate, transpose)
@@ -17,6 +15,9 @@ import Control.Monad.IO.Class (liftIO)
 
 import qualified Text.PrettyPrint.Boxes as B
 
+import qualified Data.IntSet as IS
+import Cycles (getCycleLens)
+import Util (currTime, msTimeDiff)
 import Types
 
 -- make finite ID domain
@@ -70,6 +71,15 @@ ifT True f = f
 ifF False _ = mkFalse
 ifF True f = f
 
+-- clean up warnings
+-- guards must have >= / < X
+-- need lane for loop delta per u
+-- store result for last loop in extra location for quick access
+-- implement witness condition on rows
+-- per until/counter extra guard greedy lane
+-- copy labelling from around
+-- impose guard conditions for U
+
 -- vector of run in a path schema
 data PosVars = PosVars {
                  posId :: Integer
@@ -103,18 +113,27 @@ toLtype (False,True) = End
 -- is one of given loop types
 isOneOfLT ls p = mkOr =<< mapM (flip isLtype p) ls
 
--- input: graph structure, ltl formula, path schema length
+-- input: graph structure, optional loop lengths, ltl formula, path schema length
 -- output: valid run if possible
-findRun :: Graph Char -> Formula Char -> Int -> Bool -> IO (Maybe Run)
-findRun g f n v = evalZ3 $ do
+findRun :: Graph Char -> [Int] -> Formula Char -> Int -> Bool -> IO (Maybe Run)
+findRun g ml f n v = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
-
-  log "Enumerating simple cycle lengths..."
-  start0 <- currTime
-  let lens = calcValidCycleLengths g     -- valid loop lens (use johnson on g!)
-  end0 <- currTime
-  log $ "Found lengths " ++ show lens ++ " in: " ++ showTime start0 end0
+  lens <- case ml of
+    [] -> do
+      log "Enumerating simple cycle lengths..."
+      start0 <- currTime
+      -- calculate valid loop lens with Johnsons algorithm in (n+e)(c+1)
+      -- selfloops must be unrolled to loops of size 2 -> we must always allow 2
+      -- apart of self-loops, all guessed loops are simple cycles in graph
+      let lens = IS.elems $ IS.insert 2 $ getCycleLens $ kripke2fgl g
+      end0 <- currTime
+      log $ "Found lengths " ++ show lens ++ " in: " ++ showTime start0 end0
+      return lens
+    -- if the provided lengths are incomplete, probably a solution will not be found!
+    -- if a superset is provided, the formula will be bigger than neccessary,
+    -- but may be a good idea for small, but REALLY dense graphs (provide [1..n])
+    ls -> log ("Using provided simple cycle lengths: "++show ls) >> return (2:ls)
 
   log "Building constraints..."
   start1 <- currTime
@@ -236,8 +255,8 @@ findRun g f n v = evalZ3 $ do
 
     -- valid backloop and also loop length (restrict to possible lengths of simple loops in orig. graph)
     , join $ mkImplies <$> isLtype End (lt V.! i) <*> (mkAnd =<< sequence [
-          isValidEdge ge nid (ids V.! i, lst V.! i)
-        , mkExistsI lens (\l -> join $ mkEq (llen V.! i) <$> (mkInteger $ fromIntegral l))
+          isValidEdge ge nid (ids V.! i, lst V.! i) -- valid backloop
+        , withLoopLen i $ const mkTrue              -- valid loop length
         ])
 
     -- enforce 2x unrolled left (same ids and labels, but outside of loop)
@@ -301,7 +320,7 @@ findRun g f n v = evalZ3 $ do
           Next _ ->  lbl_ij_equiv_to $ mkAnd =<< sequence
             [ ifT (i<n-1) $ mkAnd (fmap (lbl (i+1)) subf) -- subf. must hold in succ. node
             -- backloop edge -> must check that subformula holds in target
-            , join $ mkImplies <$> (isLtype End (lt V.! i)) <*> mkExistsI lens (\l -> ifF (i-l+1>=0) $ mkAnd (fmap (lbl (i-l+1)) subf))
+            , join $ mkImplies <$> (isLtype End (lt V.! i)) <*> withLoopLen i (\l -> ifF (i-l+1>=0) $ mkAnd (fmap (lbl (i-l+1)) subf))
             ]
           -- need to consider subformulas in until separately.. get their subformula index and set constraints
           Until 1 f g -> do -- this is the regular until
@@ -371,8 +390,7 @@ findRun g f n v = evalZ3 $ do
   log $ "Finished after: "++showTime start2 end2
   return result
 
-  where currTime = liftIO $ getTime Monotonic
-        showTime a b = show ((/1000000) . fromIntegral . abs . toNanoSecs $ b-a)++" ms" -- print time diff. of a and b
+  where showTime a b = show (msTimeDiff a b) ++ " ms"
         log = when v . liftIO . putStrLn
 
 -- generate pretty-printed run string for output

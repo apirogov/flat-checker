@@ -6,10 +6,12 @@ import Options.Applicative
 import Types
 import Parse
 import Solve
+import Util
 
 data Args = Args { argFormula :: String
                  , argMaxSchemaSize :: Int
                  , argGraphFile :: String
+                 , argLoopLens :: [Int]
                  , argVerbose :: Bool
                  }
 
@@ -21,6 +23,8 @@ parseArgs = Args
          <> help "Defines the path-schema size" {- <> value 10 <> showDefault -} )
         <*> option str (long "graph-file" <> short 'g' <> metavar "FILE"
          <> help "File containing the graph definition" <> value "" <> showDefault)
+        <*> option (eitherReader parseLoopLens) (long "loop-lens" <> short 'l' <> metavar "L1,L2,..."
+         <> help "List of simple loop lengths possible in given graph (on faith!)" <> value [])
         <*> switch (long "verbose" <> short 'v' <> help "Enable verbose server log")
 
 -- reads a directed graph from a file or stdin and checks the given formula for the specified schema size
@@ -37,8 +41,8 @@ main = do
                 if exf then Just <$> readFile filename
                        else putStrLn "Error: File does not exist." >> return Nothing
 
-  let g = maybe Nothing (parseGraph filename) filedata -- try .graph
-  mg <- case g of                                      -- then try .dot
+  let gg = maybe Nothing (parseGraph filename) filedata -- try .graph
+  mg <- case gg of                                      -- then try .dot
             Nothing -> maybe (return Nothing) parseDot filedata
             Just gf -> return $ Just gf
 
@@ -50,16 +54,17 @@ main = do
     Just f -> do
       case mg of
         Nothing -> putStrLn "Error: Could not load graph from file."
-        Just g  -> findAndPrint g f (argMaxSchemaSize args) (argVerbose args)
+        Just g  -> findAndPrint g (argLoopLens args) f (argMaxSchemaSize args) (argVerbose args)
 
 -- this is also useful in the ghci REPL
-findAndPrint :: Graph Char -> Formula Char -> Int -> Bool -> IO ()
-findAndPrint g f n v = do
+findAndPrint :: Graph Char -> [Int] -> Formula Char -> Int -> Bool -> IO ()
+findAndPrint g ml f n v = do
   hSetBuffering stdout LineBuffering
-  r <- findRun g f n v
+  r <- findRun g ml f n v
   case r of
     Just run -> putStrLn "Solution:" >> putStrLn (showRun f run)
     Nothing -> putStrLn "No solution found."
 
--- unsafe helper for REPL. takes filename and formula string
-unsafeSolve g f n = graphFromFile g >>= \g -> findAndPrint g (formula f) n True
+-- unsafe REPL helper
+unsafeSolve :: String -> String -> Int -> IO ()
+unsafeSolve gf f n = graphFromFile gf >>= \g -> findAndPrint g [] (formula f) n True

@@ -15,17 +15,16 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Types, Parse, Solve, Graph
+  exposed-modules:     Types, Parse, Solve, Graph, Cycles, Util
   build-depends:       base >= 4.7 && < 5
                      , containers
-                     , mtl
-                     , lens
                      , vector
-                     , parsec
-                     , vector
-                     , containers
                      , text
                      , fgl
+                     , mtl
+                     , monad-loops
+                     , lens
+                     , parsec
                      , clock
                      , boxes
                      , graphviz
@@ -35,7 +34,7 @@ library
 executable fltl-checker
   hs-source-dirs:      app
   main-is:             Main.hs
-  ghc-options:         -O3 -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:         -O3 -threaded -rtsopts -with-rtsopts=-N -Wall
   build-depends:       base
                      , fltl-checker
                      , directory
