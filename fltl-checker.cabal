@@ -29,6 +29,7 @@ library
                      , boxes
                      , graphviz
                      , z3
+  ghc-options:         -Wall -Wno-missing-signatures
   default-language:    Haskell2010
 
 executable fltl-checker

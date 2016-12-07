@@ -88,9 +88,9 @@ parseGraph filename str = parse' graph filename' str
 
 -- load a digraph from a dot file. needs IO to catch failure
 parseDot :: String -> IO (Maybe (Graph Char))
-parseDot dgs = catch (Just <$> evaluate g) handle
-  where handle :: GraphvizException -> IO (Maybe (Graph Char))
-        handle _ = return Nothing
+parseDot dgs = catch (Just <$> evaluate g) handleErr
+  where handleErr :: GraphvizException -> IO (Maybe (Graph Char))
+        handleErr _ = return Nothing
         g = parseDot' dgs
 
 -- load a digraph from a dot file. unfortunately an exception can be thrown

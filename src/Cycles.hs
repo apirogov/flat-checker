@@ -64,7 +64,7 @@ johnsonWith f = do
         js .= s
         jBlocked %= \bl -> bl V.// (zip k $ repeat False)
         jB       %= \b  -> b  V.// (zip k $ repeat IS.empty)
-        circuit ak s s f
+        _ <- circuit ak s s f
         jG %= G.delNode s
         js += 1
       [] -> js .= n

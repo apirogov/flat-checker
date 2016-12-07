@@ -246,13 +246,3 @@ mkSimple = gmap simplify
             p' = simpleEdges n p
             s' = simpleEdges n s
 
--- | Find all the nodes in the graph that match the given predicate.
-filterNodes'     :: (Graph g) => (g a b -> Node -> Bool) -> g a b -> [Node]
-filterNodes' p g = filter (p g) (nodes g)
-
--- | This is a pseudo-inverse of 'undir': any edges that are both successor
---   and predecessor become successor edges only.
-oneWay :: (DynGraph g, Eq b) => g a b -> g a b
-oneWay = gmap rmPre
-    where
-      rmPre (p,n,l,s) = (p \\ s,n,l,s)
