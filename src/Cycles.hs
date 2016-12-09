@@ -45,7 +45,7 @@ getCycleLens g = getCyclesWith g (\s c -> IS.insert (SQ.length s) c) IS.empty
 getCyclesWith :: (G.DynGraph g) => g a b -> ReportFunc c -> c -> c
 getCyclesWith g f c = _jCycles $ execState (johnsonWith f) (Johnson 0 g V.empty V.empty SQ.empty c)
 
--- implementation of Johnson's algorithm for finding simple cycles
+-- | implementation of Johnson's algorithm for finding simple cycles
 -- f = reporting function that takes the current nodestack (containing the cycle nodes)
 -- and some container and does something with it
 johnsonWith :: (G.DynGraph g) => ReportFunc c -> JState g a b c ()

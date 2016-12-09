@@ -15,7 +15,7 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Types, Parse, Solve, Graph, Cycles, Util
+  exposed-modules:     Types, Parse, Solve, Graph, Cycles, Util, Z3Util
   build-depends:       base >= 4.7 && < 5
                      , containers
                      , vector

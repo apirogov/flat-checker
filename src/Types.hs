@@ -1,8 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
-  Graph, toGraph, nodes, edges, hasEdge, hasProp, props, next,
-  calcValidCycleLengths, kripke2fgl
+  Graph, toGraph, nodes, edges, hasEdge, hasProp, props, next, kripke2fgl
 ) where
 -- required for formula
 import Data.Maybe (catMaybes)
@@ -26,9 +25,8 @@ import Data.IntSet (IntSet)
 import Data.Vector (Vector)
 
 import qualified Data.Graph.Inductive as G
-import Cycles
 
--- Until ratios allowed: 0 < r <= 1
+-- | AST of an fLTL formula. Until ratios allowed: 0 < r <= 1
 data Formula a = Tru | Fls | Prop a | And (Formula a) (Formula a) | Or (Formula a) (Formula a)
                | Not (Formula a) | Next (Formula a) | Until (Ratio Int) (Formula a) (Formula a)
                deriving (Eq,Ord,Data)
@@ -59,56 +57,51 @@ addFormula f = modify addIfNew
   where addIfNew old@(currid, subfs) | f `M.member` subfs = old
                                      | otherwise = (currid+1, M.insert f currid subfs)
 
--- post-order traversal collecting all subformulas
+-- | post-order traversal collecting all subformulas
 enumerateSubformulas :: (Ord a,Data a) => Formula a -> Map (Formula a) Int
 enumerateSubformulas = snd . (flip execState (0,M.empty)) . go
   where go f = traverseOf_ plate go f *> addFormula f
 
--- filter out the U-subformulas only
+-- | filter out the U-subformulas only
 getEvilUntils :: (Ord a) => Map (Formula a) Int -> Map (Formula a) Int
 getEvilUntils = M.fromList . flip zip [0..] . filter evil . filter (has _Until)
               . map fst . sortOn snd . M.toList
   where evil (Until 1 _ _) = False
         evil _ = True
 
--- given all existing subformulas and a formula, tell its direct deps
+-- | given all existing subformulas and a formula, tell its direct deps
 subformulas :: (Ord a,Data a) => Map (Formula a) Int -> Formula a -> [Int]
 subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 
--- can this formula be evaluated by simple lookup?
+-- | can this formula be evaluated by simple lookup?
 isLocal :: Data a => Formula a -> Bool
 isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
 
--- a graph is just a adj. list decorated with proposition sets
+-- | a graph is just a adj. list decorated with proposition sets
 type Graph a = Vector (Set a, IntSet)
 
--- a directed adj. list for kripke structure graph, start node implicitly has id 0
+-- | a directed adj. list for kripke structure graph, start node implicitly has id 0
 toGraph :: Ord a => [([a],[Int])] -> Graph a
 toGraph l = V.fromList $ map (\(ps,ns) -> (S.fromList ps, IS.fromList ns)) l
 
--- is there an edge from i to j in g?
+-- | is there an edge from i to j in g?
 hasEdge :: Graph a -> (Int,Int) -> Bool
 g `hasEdge` (i,j) = j `IS.member` next g i
 
--- return the vertex ids
+-- | return the vertex ids
 nodes :: Graph a -> [Int]
 nodes g = [0..length g-1]
--- return a complete list of edges
+-- | return a complete list of edges
 edges :: Graph a -> [(Int,Int)]
 edges g = concatMap (\(i,l)->zip (replicate (length l) i) l)
         $ zip [0..(length g - 1)] $ V.toList $ fmap (IS.toList . snd) g
 
--- does vertex i of g contain p as proposition?
+-- | does vertex i of g contain p as proposition?
 hasProp g p i = p `S.member` props g i
--- propositions of vertex i of graph g
+-- | propositions of vertex i of graph g
 props g i = fst $ g V.! i
--- successors of vertex i of graph g
+-- | successors of vertex i of graph g
 next g i = snd $ g V.! i
-
-hasSelfloops = any (\(i,j) -> i==j) . edges
-
-calcValidCycleLengths :: Graph a -> [Int]
-calcValidCycleLengths g = IS.elems . (if hasSelfloops g then IS.insert 2 else id) . getCycleLens $ kripke2fgl g
 
 -- helper: drop labels, remove selfloops. no multiloops anyway as input are adj. sets
 kripke2fgl :: Graph a -> G.Gr () ()

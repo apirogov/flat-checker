@@ -1,5 +1,5 @@
 module Solve (
-  findRun, showRun
+  SolveConf(..), defaultSolveConf, findRun, showRun
 ) where
 import Prelude hiding (log)
 import Data.Ratio
@@ -18,69 +18,28 @@ import qualified Text.PrettyPrint.Boxes as B
 
 import qualified Data.IntSet as IS
 import Cycles (getCycleLens)
-import Util (currTime, msTimeDiff)
+import Util (currTime, showTime)
 import Types
+import Z3Util
 
--- make finite ID domain
-mkEnum :: Show a => String -> String -> [a] -> Z3 Sort
-mkEnum sname spref is = join $ mkDatatype <$> mkStringSymbol sname <*> forM is makeconst
-  where makeconst i = join $ mkConstructor <$> mkStringSymbol (spref++(show i)) <*> mkStringSymbol (spref++(show i)) <*> pure []
-
--- custom enumeration type for node ids (NOTE: seems even a bit slower than using ints? benchmark more!)
-getNidSort' :: [Int] -> Z3 (String -> Z3 AST, Model -> AST -> Z3 (Maybe Integer), V.Vector AST)
-getNidSort' is = do
-  node <- mkEnum "NodeId" "n" is
-  nodeConst <- V.fromList <$> getDatatypeSortConstructors node
-  let mkFreshNodeVar = flip mkFreshConst node
-  nid <- mapM (flip mkApp []) nodeConst
-  -- evaluate resulting id back to an integer
-  let evalNid m sym = do
-        ret <- modelEval m sym True
-        case ret of
-          Nothing -> return Nothing
-          Just v -> astToString v >>= return . Just . read . tail
-  return (mkFreshNodeVar, evalNid, nid)
-
--- use ints as node ids
-getNidSort :: [Int] -> Z3 (String -> Z3 AST, Model -> AST -> Z3 (Maybe Integer), V.Vector AST)
-getNidSort is = do
-  nid <- V.fromList <$> mapM (mkInteger . fromIntegral) is
-  return (mkFreshIntVar, evalInt, nid)
-
--- given valid edges and two variable syms, enumerate all valid assignments
+-- | given valid edges and two variable syms, enumerate all valid assignments
 isValidEdge :: [(Int,Int)] -> Vector AST -> (AST,AST) -> Z3 AST
 isValidEdge validEdges constNid (fromVar,toVar) = mkOr =<< forM validEdges (\(i,j) ->
   mkAnd =<< sequence [mkEq fromVar (constNid V.! i), mkEq toVar (constNid V.! j)])
 
--- helper: generate a variable name from prefix and a list of indices
-varname pref ind = intercalate "_" $ pref:(map show ind)
-
--- sugar, expand quantifiers over variables
-mkForallI :: [a] -> (a -> Z3 AST) -> Z3 AST
-mkForallI [] _ = mkTrue
-mkForallI ind f = mkAnd =<< forM ind f
-mkExistsI :: [a] -> (a -> Z3 AST) -> Z3 AST
-mkExistsI [] _ = mkFalse
-mkExistsI ind f = mkOr =<< forM ind f
-
--- ite is MUCH faster than using implications here
--- mkWithMax a b f = mkAnd =<< sequence [join $ mkImplies <$> mkGe a b <*> f a, join $ mkImplies <$> mkLt a b <*> f b]
-mkWithMax a b f = join $ mkIte <$> mkGt a b <*> f a <*> f b
-
--- helper: allocate a vector of variable symbols with given prefix, indexed over is
-mkVarVec mkf name is = V.fromList <$> forM is (\i -> mkf $ varname name [i])
-
--- helper: access 2-indexed variable
+-- | helper: access 2-indexed variable
 at var i j = (var V.! i) V.! j
 
--- helper: allocate a matrix of variable symbols with given prefix, indexed over is and js
-mkVarMat mkf name is js = V.fromList <$> forM is (\i -> mkVarVec mkf (varname name [i]) js)
-
--- helper: only enforce f if predicate is true, otherwise its trivially true or false
-ifT False _ = mkTrue
-ifT True f = f
-ifF False _ = mkFalse
-ifF True f = f
+-- | configuration structure for the checker
+data SolveConf = SolveConf
+  { slvFormula       :: Formula Char
+  , slvMaxSchemaSize :: Int
+  , slvGraphFile     :: String
+  , slvLoopLens      :: [Int]
+  , slvVerbose       :: Bool
+  }
+-- | default configuration for the checker
+defaultSolveConf f n = SolveConf f n "" [] False
 
 data PosVars = PosVars
   { posId     :: Integer          -- ^ node id at current position (first node: 0)
@@ -93,16 +52,16 @@ data PosVars = PosVars
   , posLbls    :: Vector Bool     -- ^ for each subformula, flag whether it holds at this position
   , posUCtrs   :: Vector Integer  -- ^ intermediate values of counters of the structure
   , posUSufMax :: Vector Integer  -- ^ back-propagated maximum of future values of counters
-  } deriving (Show, Eq)
+  }
 
 data Run = Run
   { runPos     :: Vector PosVars  -- ^ endcodes information present for every schema position
   , runLHasPsi :: Vector Bool     -- ^ flag that says whether the last loop has a psi
-  , runLDeltas :: Vector Integer  -- ^ deltas of loop for the counters for U[m/n], outside loops: 0
-  } deriving (Show,Eq)
+  , runLDelta  :: Vector Integer  -- ^ deltas of loop for the counters for U[m/n], outside loops: 0
+  }
 
--- loop type enum, represented in formulae as 2 booleans per value
-data LoopType = Out | Start | End | In deriving (Show,Eq)
+-- | loop type enum, represented in formulae as 2 booleans per value
+data LoopType = Out | Start | End | In deriving (Eq)
 isLtype :: LoopType -> (AST,AST) -> Z3 AST
 isLtype lt (b1,b2) | lt==Out   = comb mkFalse mkFalse
                    | lt==In    = comb mkTrue  mkTrue
@@ -111,19 +70,19 @@ isLtype lt (b1,b2) | lt==Out   = comb mkFalse mkFalse
                    | otherwise = mkFalse --impossible...
   where comb v1 v2 = mkAnd =<< sequence [join $ mkEq b1 <$> v1, join $ mkEq b2 <$> v2]
 
--- translate from pair of bits to semantic loop type value
+-- | translate from pair of bits to semantic loop type value
 toLtype (False,False) = Out
 toLtype (True,True) = In
 toLtype (True,False) = Start
 toLtype (False,True) = End
 
--- is one of given loop types
+-- | is one of given loop types
 isOneOfLT ls p = mkOr =<< mapM (flip isLtype p) ls
 
--- input: graph structure, optional loop lengths, ltl formula, path schema length
--- output: valid run if possible
-findRun :: Graph Char -> [Int] -> Formula Char -> Int -> Bool -> IO (Maybe Run)
-findRun gr ml f n verbose = evalZ3 $ do
+-- | input: graph structure and configuration with formula and settings
+--   output: valid run if possible
+findRun :: SolveConf -> Graph Char -> IO (Maybe Run)
+findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
   lens <- case ml of
@@ -156,7 +115,7 @@ findRun gr ml f n verbose = evalZ3 $ do
   let indices = [0..n-1]            -- helper to quantify over indices of variables
   let ge = edges gr                 -- get directed edges of graph
 
-  (mkFreshNodeVar, evalNid, nid) <- getNidSort (nodes gr)
+  (mkFreshNodeVar, evalNid, nid) <- mkDummyEnumSort (nodes gr)
 
   -- variables to store node ids of path schema
   ids <- mkVarVec mkFreshNodeVar "nid" indices
@@ -454,14 +413,16 @@ findRun gr ml f n verbose = evalZ3 $ do
   end2 <- currTime
   log $ "Finished after: "++showTime start2 end2
   return result
+  where log = when verbose . liftIO . putStrLn
 
-  where showTime a b = show (msTimeDiff a b :: Double) ++ " ms"
-        log = when verbose . liftIO . putStrLn
-
--- generate pretty-printed run string for output
+-- | generate pretty-printed run string for output
 showRun :: Formula Char -> Run -> String
-showRun f (Run rv lp ld) = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lcs,lst,lln, uctrs], lbl])
-  where r = V.toList rv
+showRun f run = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lcs,lst,lln, uctrs], lbl])
+  where rv = runPos run
+        lp = runLHasPsi run
+        ld = runLDelta run
+        r = V.toList rv
+
         mkCol name cells = (B.text name) B.// (B.vcat B.top cells)
         addLT fun p = (fun p, posLType p)
         showIfLoop (_,Out) = ""
