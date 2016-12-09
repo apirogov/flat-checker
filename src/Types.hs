@@ -99,7 +99,7 @@ edges g = concatMap (\(i,l)->zip (replicate (length l) i) l)
         $ zip [0..(length g - 1)] $ V.toList $ fmap (IS.toList . snd) g
 
 -- does vertex i of g contain p as proposition?
-hasProp g i p = p `S.member` props g i
+hasProp g p i = p `S.member` props g i
 -- propositions of vertex i of graph g
 props g i = fst $ g V.! i
 -- successors of vertex i of graph g

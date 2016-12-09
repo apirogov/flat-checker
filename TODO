@@ -1,0 +1,3 @@
+config data type input, parametrize nodeid type etc.
+change encoding so that Z3 can find SMALLER models ? USED|UNUSED lane? leak out last loop info, used implies all asserts, end=used, next unused
+extend to guards/updates in kripke structure?

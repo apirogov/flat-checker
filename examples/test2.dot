@@ -1,0 +1,9 @@
+/* e.g. try this formula: ((aU[3/4]c)&(bU[1/4]c)) */
+digraph G {
+  0 [label="a"];
+  1 [label="b"];
+  2 [label="c"];
+  0 -> 0, 1;
+  1 -> 1, 2;
+  2 -> 2;
+}
