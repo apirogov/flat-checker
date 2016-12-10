@@ -19,6 +19,9 @@ confFromArgs = SolveConf
     <> help "File containing the graph definition" <> value "" <> showDefault)
   <*> option (eitherReader parseLoopLens) (long "loop-lens" <> short 'l' <> metavar "L1,L2,..."
     <> help "List of simple loop lengths possible in given graph (on faith!)" <> value [])
+  <*> switch (long "use-int-ids" <> short 'i' <> help "Use ints for node ids")
+  <*> switch (long "use-bool-lt" <> short 'b' <> help "Use bools for loop types")
+  <*> switch (long "dynamic-size" <> short 'd' <> help "Allow to find models smaller than supplied n")
   <*> switch (long "verbose" <> short 'v' <> help "Enable verbose server log")
 
 -- | given filename, try to load in one of the supported formats or fail

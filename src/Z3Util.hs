@@ -1,7 +1,9 @@
+{-# LANGUAGE RankNTypes, ExistentialQuantification #-}
 module Z3Util where
 import Data.List (intercalate)
 import Control.Monad
 import Z3.Monad
+import qualified Data.Map as M
 import qualified Data.Vector as V
 
 -- | make finite ID domain
@@ -9,27 +11,39 @@ mkEnum :: Show a => String -> String -> [a] -> Z3 Sort
 mkEnum sname spref is = join $ mkDatatype <$> mkStringSymbol sname <*> forM is makeconst
   where makeconst i = join $ mkConstructor <$> mkStringSymbol (spref++(show i)) <*> mkStringSymbol (spref++(show i)) <*> pure []
 
--- | custom enumeration type (NOTE: seems even a bit slower than using ints? benchmark more!)
-mkEnumSort :: [Int] -> Z3 (String -> Z3 AST, Model -> AST -> Z3 (Maybe Integer), V.Vector AST)
-mkEnumSort is = do
-  node <- mkEnum "NodeId" "n" is
-  nodeConst <- V.fromList <$> getDatatypeSortConstructors node
-  let mkFreshNodeVar = flip mkFreshConst node
-  nid <- mapM (flip mkApp []) nodeConst
+-- | variable constructor, evaluator and list of constructor symbols
+-- type EnumAPI a = (String -> Z3 AST, Model -> AST -> Z3 (Maybe a), V.Vector AST)
+data EnumAPI a = forall b. EnumAPI (String -> Z3 b, Model -> b -> Z3 (Maybe a), a -> b -> Z3 AST, b -> b -> Z3 AST)
+
+-- | create a custom enumeration type for a list of values
+mkEnumSort :: (Show a, Read a, Ord a) => String -> [a] -> Z3 (EnumAPI a)
+mkEnumSort name is = do
+  enum <- mkEnum (name++"_T") name is
+  enumConst <-getDatatypeSortConstructors enum
+  let mkFreshNodeVar = flip mkFreshConst enum
+  constrs <- mapM (flip mkApp []) enumConst
+  let cmap = M.fromList $ zip is constrs
   -- evaluate resulting id back to an integer
-  let evalNid m sym = do
+  let evalEnum m sym = do
         ret <- modelEval m sym True
         case ret of
           Nothing -> return Nothing
-          Just v -> astToString v >>= return . Just . read . tail
-  return (mkFreshNodeVar, evalNid, nid)
+          Just v -> astToString v >>= return . Just . read . drop (length name)
+  return $ EnumAPI (mkFreshNodeVar, evalEnum, mkEq . (cmap M.!), mkEq)
 
--- | return a fake enum sort that is just ints
-mkDummyEnumSort :: [Int] -> Z3 (String -> Z3 AST, Model -> AST -> Z3 (Maybe Integer), V.Vector AST)
-mkDummyEnumSort is = do
-  nid <- V.fromList <$> mapM (mkInteger . fromIntegral) is
-  return (mkFreshIntVar, evalInt, nid)
-
+-- | represent a list of scalars as integers in Z3
+mkIntEnumSort :: (Ord a) => [a] -> Z3 (EnumAPI a)
+mkIntEnumSort is = do
+  let idx = [0..length is - 1]
+  let ism = M.fromList $ zip idx is
+  let evalEnum m s = do
+        i <- evalInt m s
+        case i of
+          Nothing -> return Nothing
+          Just i' -> return $ M.lookup (fromIntegral i') ism
+  constrs <- mapM (mkInteger . fromIntegral) idx
+  let cmap = M.fromList $ zip is constrs
+  return $ EnumAPI (mkFreshIntVar, evalEnum, mkEq . (cmap M.!), mkEq)
 
 -- | sugar, expand quantifiers over variables
 mkForallI :: [a] -> (a -> Z3 AST) -> Z3 AST

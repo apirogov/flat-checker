@@ -2,6 +2,7 @@ module Solve (
   SolveConf(..), defaultSolveConf, findRun, showRun
 ) where
 import Prelude hiding (log)
+import Data.Bool
 import Data.Ratio
 import Data.Maybe
 import Data.List (intercalate)
@@ -23,29 +24,32 @@ import Types
 import Z3Util
 
 -- | given valid edges and two variable syms, enumerate all valid assignments
-isValidEdge :: [(Int,Int)] -> Vector AST -> (AST,AST) -> Z3 AST
-isValidEdge validEdges constNid (fromVar,toVar) = mkOr =<< forM validEdges (\(i,j) ->
-  mkAnd =<< sequence [mkEq fromVar (constNid V.! i), mkEq toVar (constNid V.! j)])
+-- isValidEdge :: [(Int,Int)] -> Vector AST -> (AST,AST) -> Z3 AST
+isValidEdge validEdges isNid (fromVar,toVar) = mkOr =<< forM validEdges (\(i,j) ->
+  mkAnd =<< sequence [isNid i fromVar, isNid j toVar])
 
 -- | helper: access 2-indexed variable
 at var i j = (var V.! i) V.! j
 
 -- | configuration structure for the checker
 data SolveConf = SolveConf
-  { slvFormula       :: Formula Char
-  , slvMaxSchemaSize :: Int
-  , slvGraphFile     :: String
-  , slvLoopLens      :: [Int]
-  , slvVerbose       :: Bool
+  { slvFormula    :: Formula Char -- ^ the fLTL formula to check
+  , slvSchemaSize :: Int          -- ^ schema size to use
+  , slvGraphFile  :: String       -- ^ source file of the graph (not necessary for operation)
+  , slvLoopLens   :: [Int]        -- ^ all simple loop lengths in graph (if empty, will be calculated)
+  , slvUseIntIds  :: Bool         -- ^ use ints for node ids instead of enum
+  , slvUseBoolLT  :: Bool         -- ^ use pairs of bools for loop type instead of enum
+  , slvDynamicSz  :: Bool         -- ^ allow the found model to be smaller and padded by 0's
+  , slvVerbose    :: Bool         -- ^ show additional information
   }
 -- | default configuration for the checker
-defaultSolveConf f n = SolveConf f n "" [] False
+defaultSolveConf f n = SolveConf f n "" [] False False False False
 
 data PosVars = PosVars
-  { posId     :: Integer          -- ^ node id at current position (first node: 0)
+  { posId     :: Int              -- ^ node id at current position (first node: 0)
   , posLType  :: LoopType         -- ^ are we in or outide/at border of a loop
   , posLCount :: Integer          -- ^ how often is this node visited (outside of loop: 1)
-  , posLStart :: Integer          -- ^ if in loop, start node, else: 0 as dummy
+  , posLStart :: Int              -- ^ if in loop, start node, else: 0 as dummy
   , posLCtr   :: Integer          -- ^ counter to calculate loop length
   , posLLen   :: Integer          -- ^ length of current loop (outside: 0)
 
@@ -61,28 +65,47 @@ data Run = Run
   }
 
 -- | loop type enum, represented in formulae as 2 booleans per value
-data LoopType = Out | Start | End | In deriving (Eq)
-isLtype :: LoopType -> (AST,AST) -> Z3 AST
-isLtype lt (b1,b2) | lt==Out   = comb mkFalse mkFalse
-                   | lt==In    = comb mkTrue  mkTrue
-                   | lt==Start = comb mkTrue  mkFalse
-                   | lt==End   = comb mkFalse mkTrue
-                   | otherwise = mkFalse --impossible...
+data LoopType = Out | Start | End | In deriving (Eq, Read, Show, Ord)
+
+-- | represent loop type as a Z3 enumeration type
+mkEnumLType :: Z3 (EnumAPI LoopType)
+mkEnumLType = mkEnumSort "Lt" [Start, In, End, Out]
+
+-- | represent a vector of loop types as pairs of booleans
+-- TODO: generalize to general log. bitblasting? probably bad performance
+mkBoolLType :: Z3 (EnumAPI LoopType)
+mkBoolLType = return $ EnumAPI (mkFreshLTVar, evalLTB, isLTypeB, mkEqLType)
+  where mkFreshLTVar s = (,) <$> mkFreshBoolVar (s++"_1") <*> mkFreshBoolVar (s++"_2")
+        mkEqLType a b = mkAnd =<< forM [Start,In,End,Out] (\t -> join $ mkIff <$> isLTypeB t a <*> isLTypeB t b)
+
+-- | encode equality of ltype as bools, both 0 <-> out, both 1 <-> in, lt1=1,lt2=0 <-> start, lt2=1,lt1=0 <-> end
+isLTypeB :: LoopType -> (AST,AST) -> Z3 AST
+isLTypeB lt (b1,b2) | lt==Out   = comb mkFalse mkFalse
+                    | lt==In    = comb mkTrue  mkTrue
+                    | lt==Start = comb mkTrue  mkFalse
+                    | lt==End   = comb mkFalse mkTrue
+                    | otherwise = mkFalse --impossible...
   where comb v1 v2 = mkAnd =<< sequence [join $ mkEq b1 <$> v1, join $ mkEq b2 <$> v2]
 
--- | translate from pair of bits to semantic loop type value
-toLtype (False,False) = Out
-toLtype (True,True) = In
-toLtype (True,False) = Start
-toLtype (False,True) = End
+evalLTB :: Model -> (AST,AST) -> Z3 (Maybe LoopType)
+evalLTB m (a,b) = do
+  b1 <- evalBool m a
+  b2 <- evalBool m b
+  if isJust b1 && isJust b2 then return $ Just $ toLtype (fromJust b1, fromJust b2)
+                            else return $ Nothing
+  where
+    toLtype (False,False) = Out
+    toLtype (True,True) = In
+    toLtype (True,False) = Start
+    toLtype (False,True) = End
 
--- | is one of given loop types
-isOneOfLT ls p = mkOr =<< mapM (flip isLtype p) ls
+-- | is one of given items mapped by some value
+mkAny f ls p = mkOr =<< mapM (flip f p) ls
 
 -- | input: graph structure and configuration with formula and settings
 --   output: valid run if possible
 findRun :: SolveConf -> Graph Char -> IO (Maybe Run)
-findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
+findRun (SolveConf f n _ ml useIntIds useBoolLT dynsz verbose) gr = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
   lens <- case ml of
@@ -115,16 +138,16 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
   let indices = [0..n-1]            -- helper to quantify over indices of variables
   let ge = edges gr                 -- get directed edges of graph
 
-  (mkFreshNodeVar, evalNid, nid) <- mkDummyEnumSort (nodes gr)
-
   -- variables to store node ids of path schema
+  (EnumAPI (mkFreshNodeVar, evalNid, isNid, eqNid)) <- bool (mkEnumSort "Nid") mkIntEnumSort useIntIds $ (nodes gr) ++ [-1]
   ids <- mkVarVec mkFreshNodeVar "nid" indices
 
-  -- variables to indicate loop structure: both 0 <-> out, both 1 <-> in, lt1=1,lt2=0 <-> start, lt2=1,lt1=0 <-> end
+  -- variables to indicate loop structure
   -- no self loops, only "simple" loops (no internal id equal to left or right border)
-  lt1 <- mkVarVec mkFreshBoolVar "lt1" indices
-  lt2 <- mkVarVec mkFreshBoolVar "lt2" indices
-  let lt = V.zip lt1 lt2
+  (EnumAPI (mkFreshLTVar, evalLT, isLtype, _)) <- if useBoolLT then mkBoolLType else mkEnumLType
+  lt <- mkVarVec mkFreshLTVar "lt" indices
+  let isOneOfLT = mkAny isLtype
+
   -- loop counters (how often is this node taken? >1 at loops only)
   lcnt <- mkVarVec mkFreshIntVar "lct" indices
   -- prefix sum of lcnt (has total run length in last position)
@@ -164,9 +187,9 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
 
   --------------------------------------------------------------------------------------------------
   -- always start path at node 0
-  assert =<< mkEq (nid V.! 0) (ids V.! 0)
+  assert =<< isNid 0 (ids V.! 0)
   -- neighboring ids must have valid edge (check that non-looping path is valid)
-  assert =<< mkForallI [(i,j) | i<-init indices,let j=i+1] (\(i,j) -> isValidEdge ge nid ((ids V.! i),(ids V.! j)))
+  assert =<< mkForallI [(i,j) | i<-init indices,let j=i+1] (\(i,j) -> isValidEdge ge isNid ((ids V.! i),(ids V.! j)))
 
   -- path ends with ending of a loop (we consider only infinite paths!)
   assert =<< isLtype End (lt V.! (n-1))
@@ -219,11 +242,11 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
     , ifT (i>0) $ join $ mkEq (steps V.! i) <$> mkAdd [steps V.! (i-1), lcnt V.! i]
 
     -- take loop start id at start from curr id
-    , join $ mkImplies <$> (isLtype Start (lt V.! i)) <*> (mkEq (lst V.! i) (ids V.! i))
-    -- outside loops start id is always node 0 (as dummy)
-    , join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> (mkEq (lst V.! i) (nid V.! 0))
+    , join $ mkImplies <$> (isLtype Start (lt V.! i)) <*> (eqNid (lst V.! i) (ids V.! i))
+    -- outside loops start id is -1 (as dummy)
+    , join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> (isNid (-1) (lst V.! i))
     -- propagate start id forward in loop
-    , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> mkEq (lst V.! (i-1)) (lst V.! i)
+    , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> eqNid (lst V.! (i-1)) (lst V.! i)
 
     -- loop length counter outside of loops is zero
     , join $ mkImplies <$> isLtype Out   (lt V.! i) <*> mkEq (lctr V.! i) _0
@@ -241,7 +264,7 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
 
     -- valid backloop and also loop length (restrict to possible lengths of simple loops in orig. graph)
     , join $ mkImplies <$> isLtype End (lt V.! i) <*> (mkAnd =<< sequence
-        [ isValidEdge ge nid (ids V.! i, lst V.! i) -- valid backloop
+        [ isValidEdge ge isNid (ids V.! i, lst V.! i) -- valid backloop
         , withLoopLen i $ const mkTrue              -- valid loop length
         ])
 
@@ -252,8 +275,8 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
     , join $ mkImplies <$> (mkNot =<< isLtype Out (lt V.! i)) <*> (withLoopLen i (\l -> ifF (i-2*l>=0) (mkAnd =<< sequence
         [ isLtype Out (lt V.! (i-l))
         , isLtype Out (lt V.! (i-2*l))
-        , mkEq (ids V.! i) (ids V.! (i-l))
-        , mkEq (ids V.! i) (ids V.! (i-2*l))
+        , eqNid (ids V.! i) (ids V.! (i-l))
+        , eqNid (ids V.! i) (ids V.! (i-2*l))
         , allEq i (i-l)   (snd <$> M.toList sfs) labels
         , allEq i (i-2*l) (snd <$> M.toList sfs) labels
         ])))
@@ -262,7 +285,7 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
     , join $ mkImplies <$> (mkAnd =<< sequence [mkNot =<< isLtype Out (lt V.! i), mkNot =<< (mkEq (lcnt V.! i) _0)])
         <*> (withLoopLen i (\l -> ifF (i+l<=n-1) (mkAnd =<< sequence
         [ isLtype Out (lt V.! (i+l))
-        , mkEq (ids V.! i) (ids V.! (i+l))
+        , eqNid (ids V.! i) (ids V.! (i+l))
         , allEq i (i+l) (snd <$> M.toList sfs) labels
         ])))
 
@@ -302,7 +325,7 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
           lbl_ij_equiv_to t = join $ mkIff <$> pure (lbl i j) <*> t
       case sf of
           -- an atomic proposition holds if the chosen node contains the proposition
-          Prop p -> lbl_ij_equiv_to $ mkExistsI (filter (hasProp gr p) $ nodes gr) (\node -> mkEq (ids V.! i) (nid V.! node))
+          Prop p -> lbl_ij_equiv_to $ mkExistsI (filter (hasProp gr p) $ nodes gr) (\node -> isNid node (ids V.! i))
           -- obvious
           Tru -> lbl_ij_equiv_to mkTrue
           Fls -> lbl_ij_equiv_to mkFalse
@@ -368,20 +391,24 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
   st <- if verbose then T.pack <$> solverToString else pure T.empty --slow, do only in verbose mode for infos
   let countInts = length $ T.breakOnAll (T.pack "Int") st
   let countBools = length $ T.breakOnAll (T.pack "Bool") st
+  let countNids = bool ((subtract 1) . length $ T.breakOnAll (T.pack "Nid_T") st) 0 useIntIds
+  let countLTs = bool ((subtract 1) . length $ T.breakOnAll (T.pack "Lt_T") st) 0 useBoolLT
   log $ "Formula size: " ++ show (T.length st) ++ " Ints: " ++ show countInts ++ " Bools: " ++ show countBools
+                         ++ " Nids: " ++ show countNids ++ " LTs: " ++ show countLTs
 
   start2 <- currTime
   log "Searching..."
   result <- fmap snd $ withModel $ \m -> do
-    let getVec :: EvalAst Z3 a -> Vector AST -> Z3 (Vector a)
-        getVec evalfunc vec = fromMaybe V.empty <$> mapEval evalfunc m vec
+    let getVec :: (Model -> b -> Z3 (Maybe a)) -> Vector b -> Z3 (Vector a)
+        getVec evalfunc vec = fromMaybe V.empty <$> (sequence <$> (mapM (evalfunc m) vec))
 
         getMat :: EvalAst Z3 a -> Vector (Vector AST) -> Z3 (Vector (Vector a))
         getMat fun mat = fromMaybe V.empty . V.sequence <$> V.forM mat (\row -> mapEval fun m row)
 
     idvals <- getVec evalNid ids
+    -- ltvals <- fmap toLtype <$> (V.zip <$> getVec evalBool lt1 <*> getVec evalBool lt2)
+    ltvals <- getVec evalLT lt
 
-    ltvals <- fmap toLtype <$> (V.zip <$> getVec evalBool lt1 <*> getVec evalBool lt2)
     lcntvals <- getVec evalInt lcnt
     lstvals <- getVec evalNid lst
     lctrvals <- getVec evalInt lctr
@@ -417,7 +444,7 @@ findRun (SolveConf f n _ ml verbose) gr = evalZ3 $ do
 
 -- | generate pretty-printed run string for output
 showRun :: Formula Char -> Run -> String
-showRun f run = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lcs,lst,lln, uctrs], lbl])
+showRun f run = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lst,lln,lcs, uctrs], lbl])
   where rv = runPos run
         lp = runLHasPsi run
         ld = runLDelta run
@@ -431,9 +458,9 @@ showRun f run = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lcs,lst,lln,
 
         ids = mkCol "ID" $ map (B.text . show       . posId) r
         lts = mkCol "LT" $ map (B.text . lsym       . posLType) r
-        lcs = mkCol "LC" $ map (B.text . lcount     . posLCount) r
         lst = mkCol "LS" $ map (B.text . showIfLoop . addLT posLStart) r
         lln = mkCol "LL" $ map (B.text . showIfLoop . addLT posLLen) r
+        lcs = mkCol "LC" $ map (B.text . lcount     . posLCount) r
 
         -- show counter column only if there are any
         uctrs = if V.null lp then B.nullBox
