@@ -12,9 +12,9 @@ stack install
 
 `fltl-checker -g FILE -f FORMULA -n SIZE`
 
-The file must describe a directed graph with labeled nodes in a simple format as
-shown in the `examples/` directory or in DOT format (from GraphViz).
-If no file argument is provided, the graph is read from standard input.
+The file must describe a directed graph with labeled nodes in DOT format (from
+GraphViz) as shown in the `examples/` directory. If no file argument is
+provided, the graph is read from standard input.
 
 The LTL formula has the following grammar:
 

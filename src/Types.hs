@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
-  Graph, toGraph, nodes, edges, hasEdge, hasProp, props, next, kripke2fgl
+  Graph, nodes, edges, hasProp
 ) where
 -- required for formula
 import Data.Maybe (catMaybes)
@@ -18,12 +18,7 @@ import Control.Lens.TH
 
 -- required for graph
 import qualified Data.Set as S
-import qualified Data.IntSet as IS
-import qualified Data.Vector as V
 import Data.Set (Set)
-import Data.IntSet (IntSet)
-import Data.Vector (Vector)
-
 import qualified Data.Graph.Inductive as G
 
 -- | AST of an fLTL formula. Until ratios allowed: 0 < r <= 1
@@ -77,32 +72,19 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 isLocal :: Data a => Formula a -> Bool
 isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
 
--- | a graph is just a adj. list decorated with proposition sets
-type Graph a = Vector (Set a, IntSet)
+-- TODO: what kind of guards and updates on the graph are allowed?
+-- data EdgeL b = GuardGE b Integer | GuardLT b Integer | UpdateInc b Integer
 
--- | a directed adj. list for kripke structure graph, start node implicitly has id 0
-toGraph :: Ord a => [([a],[Int])] -> Graph a
-toGraph l = V.fromList $ map (\(ps,ns) -> (S.fromList ps, IS.fromList ns)) l
+-- | atomic propositions indexed by a, start node always has id 0
+type Graph a = G.Gr (Set a) ()
 
--- | is there an edge from i to j in g?
-hasEdge :: Graph a -> (Int,Int) -> Bool
-g `hasEdge` (i,j) = j `IS.member` next g i
+-- | has node n of graph gr the atomic proposition p?
+hasProp gr p n = case G.lab gr n of
+  Nothing -> False
+  Just ps -> S.member p ps
 
--- | return the vertex ids
 nodes :: Graph a -> [Int]
-nodes g = [0..length g-1]
--- | return a complete list of edges
+nodes = G.nodes
+
 edges :: Graph a -> [(Int,Int)]
-edges g = concatMap (\(i,l)->zip (replicate (length l) i) l)
-        $ zip [0..(length g - 1)] $ V.toList $ fmap (IS.toList . snd) g
-
--- | does vertex i of g contain p as proposition?
-hasProp g p i = p `S.member` props g i
--- | propositions of vertex i of graph g
-props g i = fst $ g V.! i
--- | successors of vertex i of graph g
-next g i = snd $ g V.! i
-
--- helper: drop labels, remove selfloops. no multiloops anyway as input are adj. sets
-kripke2fgl :: Graph a -> G.Gr () ()
-kripke2fgl g = G.mkGraph (zip (nodes g) $ repeat ()) $ map (\(i,j) -> (i,j,())) $ filter (\(i,j) -> i/=j) $ edges g
+edges = G.edges

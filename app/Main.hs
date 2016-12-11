@@ -32,10 +32,7 @@ readGraph filename = do
                 exf <- doesFileExist filename
                 if exf then Just <$> readFile filename
                        else putStrLn "Error: File does not exist." >> return Nothing
-  let gg = maybe Nothing (parseGraph filename) filedata -- try .graph
-  mg <- case gg of                                      -- then try .dot
-            Nothing -> maybe (return Nothing) parseDot filedata
-            Just gf -> return $ Just gf
+  mg <- maybe (return Nothing) parseDot filedata
   case mg of
     Nothing -> error "Error: Could not load graph from file."
     Just g  -> return g
@@ -58,4 +55,4 @@ findAndPrint conf g = do
 
 -- | unsafe REPL helper. tries to load graph, parse formula and solve. can throw exceptions
 unsafeSolve :: String -> String -> Int -> IO ()
-unsafeSolve gf f n = graphFromFile gf >>= \g -> findAndPrint (defaultSolveConf (formula f) n) g
+unsafeSolve gf f n = dotFromFile gf >>= \g -> findAndPrint (defaultSolveConf (formula f) n) g

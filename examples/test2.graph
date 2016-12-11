@@ -1,8 +1,0 @@
-# e.g. try this formula: ( ( Xa & F(z&XF(z&XFz)) ) & XX((q|(pUz))UGb) )
-0 {a,c} -> 0, 1
-1 {p} -> 2
-2 {z} -> 3
-3 {q} -> 4
-4 {p} -> 1, 5
-5 {z} -> 6
-6 {b} -> 6

@@ -50,6 +50,7 @@ getCyclesWith g f c = _jCycles $ execState (johnsonWith f) (Johnson 0 g V.empty 
 -- and some container and does something with it
 johnsonWith :: (G.DynGraph g) => ReportFunc c -> JState g a b c ()
 johnsonWith f = do
+  jG %= \gr -> G.delEdges (map (\i->(i,i)) $ G.nodes gr) gr --remove self-loops
   n <- use $ jG . to G.nodes . to length
   jBlocked .= V.replicate n False
   jB .= V.replicate n IS.empty

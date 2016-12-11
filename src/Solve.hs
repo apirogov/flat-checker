@@ -82,7 +82,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
       -- calculate valid loop lens with Johnsons algorithm in (n+e)(c+1)
       -- selfloops must be unrolled to loops of size 2 -> we must always allow 2
       -- apart of self-loops, all guessed loops are simple cycles in graph
-      let lens = IS.elems $ IS.insert 2 $ getCycleLens $ kripke2fgl gr
+      let lens = IS.elems $ IS.insert 2 $ getCycleLens gr
       end0 <- currTime
       log $ "Found lengths " ++ show lens ++ " in: " ++ showTime start0 end0
       return lens
