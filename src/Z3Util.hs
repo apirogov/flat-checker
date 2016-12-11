@@ -6,30 +6,33 @@ import Z3.Monad
 import qualified Data.Map as M
 import qualified Data.Vector as V
 
--- | make finite ID domain
+-- | declare finite ID domain inside Z3
 mkEnum :: Show a => String -> String -> [a] -> Z3 Sort
 mkEnum sname spref is = join $ mkDatatype <$> mkStringSymbol sname <*> forM is makeconst
   where makeconst i = join $ mkConstructor <$> mkStringSymbol (spref++(show i)) <*> mkStringSymbol (spref++(show i)) <*> pure []
 
 -- | variable constructor, evaluator and list of constructor symbols
--- type EnumAPI a = (String -> Z3 AST, Model -> AST -> Z3 (Maybe a), V.Vector AST)
-data EnumAPI a = forall b. EnumAPI (String -> Z3 b, Model -> b -> Z3 (Maybe a), a -> b -> Z3 AST, b -> b -> Z3 AST)
+data EnumAPI a = forall b. EnumAPI
+      { enumMk   :: String -> Z3 b              -- ^ constructor
+      , enumEval :: Model -> b -> Z3 (Maybe a)  -- ^ evaluator
+      , enumIs   :: a -> b -> Z3 AST            -- ^ compare to fixed value
+      , enumEq   :: b -> b -> Z3 AST            -- ^ compare two variable enums
+      }
 
 -- | create a custom enumeration type for a list of values
 mkEnumSort :: (Show a, Read a, Ord a) => String -> [a] -> Z3 (EnumAPI a)
 mkEnumSort name is = do
   enum <- mkEnum (name++"_T") name is
-  enumConst <-getDatatypeSortConstructors enum
+  enumConst <- getDatatypeSortConstructors enum
   let mkFreshNodeVar = flip mkFreshConst enum
-  constrs <- mapM (flip mkApp []) enumConst
-  let cmap = M.fromList $ zip is constrs
-  -- evaluate resulting id back to an integer
   let evalEnum m sym = do
         ret <- modelEval m sym True
         case ret of
           Nothing -> return Nothing
           Just v -> astToString v >>= return . Just . read . drop (length name)
-  return $ EnumAPI (mkFreshNodeVar, evalEnum, mkEq . (cmap M.!), mkEq)
+  constrs <- mapM (flip mkApp []) enumConst
+  let cmap = M.fromList $ zip is constrs
+  return $ EnumAPI mkFreshNodeVar evalEnum (mkEq . (cmap M.!)) mkEq
 
 -- | represent a list of scalars as integers in Z3
 mkIntEnumSort :: (Ord a) => [a] -> Z3 (EnumAPI a)
@@ -43,7 +46,31 @@ mkIntEnumSort is = do
           Just i' -> return $ M.lookup (fromIntegral i') ism
   constrs <- mapM (mkInteger . fromIntegral) idx
   let cmap = M.fromList $ zip is constrs
-  return $ EnumAPI (mkFreshIntVar, evalEnum, mkEq . (cmap M.!), mkEq)
+  return $ EnumAPI mkFreshIntVar evalEnum (mkEq . (cmap M.!)) mkEq
+
+-- | Create an enum where each of n values is encoded in log(n) bits
+mkBoolEnumSort :: (Ord a) => [a] -> Z3 (EnumAPI a)
+mkBoolEnumSort is = do
+  _T <- mkTrue
+  _F <- mkFalse
+  let n = length is
+      bits = (log $ fromIntegral n) :: Double
+      lbits = (2::Integer)^((floor bits)::Integer)
+      m = fromIntegral $ if lbits < fromIntegral n then ceiling bits else lbits
+      comb = replicateM m [False,True]  -- 0,0 / 0,1 / 1,0 / 1,1 ... for fixed length
+      ism = M.fromList $ zip is comb    -- given value -> combination
+      iism = M.fromList $ zip comb is   -- combination -> back to value
+      mkBE s = forM [1..m] $ \i -> mkFreshBoolVar (s++"_"++show i)
+      evalBE mdl bs = do
+        bvs <- mapEval evalBool mdl bs
+        case bvs of
+          Nothing -> return Nothing
+          Just bv -> return $ Just $ iism M.! bv
+      -- compare to fixed value <-> check for its combination
+      isBE a b = mkAnd =<< mapM (\(bv,v) -> mkEq bv $ if v then _T else _F) (zip b (ism M.! a))
+      -- compare equality <-> bitwise
+      eqBE a b = mkAnd =<< mapM (\(c,d) -> mkEq c d) (zip a b)
+  return $ EnumAPI mkBE evalBE isBE eqBE
 
 -- | sugar, expand quantifiers over variables
 mkForallI :: [a] -> (a -> Z3 AST) -> Z3 AST

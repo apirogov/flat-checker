@@ -63,40 +63,8 @@ data Run = Run
   , runLDelta  :: Vector Integer  -- ^ deltas of loop for the counters for U[m/n], outside loops: 0
   }
 
--- | loop type enum, represented in formulae as 2 booleans per value
-data LoopType = Out | Start | End | In deriving (Eq, Read, Show, Ord)
-
--- | represent loop type as a Z3 enumeration type
-mkEnumLType :: Z3 (EnumAPI LoopType)
-mkEnumLType = mkEnumSort "Lt" [Start, In, End, Out]
-
--- | represent a vector of loop types as pairs of booleans
--- TODO: generalize to general log. bitblasting? probably bad performance
-mkBoolLType :: Z3 (EnumAPI LoopType)
-mkBoolLType = return $ EnumAPI (mkFreshLTVar, evalLTB, isLTypeB, mkEqLType)
-  where mkFreshLTVar s = (,) <$> mkFreshBoolVar (s++"_1") <*> mkFreshBoolVar (s++"_2")
-        mkEqLType a b = mkAnd =<< forM [Start,In,End,Out] (\t -> join $ mkIff <$> isLTypeB t a <*> isLTypeB t b)
-
--- | encode equality of ltype as bools, both 0 <-> out, both 1 <-> in, lt1=1,lt2=0 <-> start, lt2=1,lt1=0 <-> end
-isLTypeB :: LoopType -> (AST,AST) -> Z3 AST
-isLTypeB lt (b1,b2) | lt==Out   = comb mkFalse mkFalse
-                    | lt==In    = comb mkTrue  mkTrue
-                    | lt==Start = comb mkTrue  mkFalse
-                    | lt==End   = comb mkFalse mkTrue
-                    | otherwise = mkFalse --impossible...
-  where comb v1 v2 = mkAnd =<< sequence [join $ mkEq b1 <$> v1, join $ mkEq b2 <$> v2]
-
-evalLTB :: Model -> (AST,AST) -> Z3 (Maybe LoopType)
-evalLTB m (a,b) = do
-  b1 <- evalBool m a
-  b2 <- evalBool m b
-  if isJust b1 && isJust b2 then return $ Just $ toLtype (fromJust b1, fromJust b2)
-                            else return $ Nothing
-  where
-    toLtype (False,False) = Out
-    toLtype (True,True) = In
-    toLtype (True,False) = Start
-    toLtype (False,True) = End
+-- | loop type enum, different encodings in Z3 can be toggled
+data LoopType = Out | Start | In | End deriving (Eq, Read, Show, Ord)
 
 -- | is one of given items mapped by some value
 mkAny f ls p = mkOr =<< mapM (flip f p) ls
@@ -138,12 +106,12 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   let ge = edges gr                 -- get directed edges of graph
 
   -- variables to store node ids of path schema
-  (EnumAPI (mkFreshNodeVar, evalNid, isNid, eqNid)) <- bool (mkEnumSort "Nid") mkIntEnumSort useIntIds $ (nodes gr) ++ [-1]
+  (EnumAPI mkFreshNodeVar evalNid isNid eqNid) <- bool (mkEnumSort "Nid") mkIntEnumSort useIntIds $ (nodes gr) ++ [-1]
   ids <- mkVarVec mkFreshNodeVar "nid" indices
 
   -- variables to indicate loop structure
   -- no self loops, only "simple" loops (no internal id equal to left or right border)
-  (EnumAPI (mkFreshLTVar, evalLT, isLtype, _)) <- if useBoolLT then mkBoolLType else mkEnumLType
+  (EnumAPI mkFreshLTVar evalLT isLtype _) <- bool (mkEnumSort "Lt") mkBoolEnumSort useBoolLT $ [Out,Start,In,End]
   lt <- mkVarVec mkFreshLTVar "lt" indices
   let isOneOfLT = mkAny isLtype
 
