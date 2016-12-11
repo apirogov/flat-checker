@@ -1,4 +1,5 @@
 module Main where
+import Data.Data
 import System.IO (hSetBuffering, BufferMode(..), stdout)
 import System.Directory (doesFileExist)
 import Options.Applicative
@@ -9,7 +10,7 @@ import Solve
 import Util
 
 -- | applicative parser for the args given on the command line
-confFromArgs :: Parser SolveConf
+confFromArgs :: Parser (SolveConf Char String)
 confFromArgs = SolveConf
   <$> option (eitherReader parseFormula) (long "formula" <> short 'f' <> metavar "FLTL-FORMULA"
     <> help "fLTL-formula to check")
@@ -24,7 +25,7 @@ confFromArgs = SolveConf
   <*> switch (long "verbose" <> short 'v' <> help "Enable verbose server log")
 
 -- | given filename, try to load in one of the supported formats or fail
-readGraph :: String -> IO (Graph Char)
+readGraph :: String -> IO (Graph Char String)
 readGraph filename = do
   filedata <- if null filename --if no graph file given, read from stdin
               then Just <$> getContents
@@ -45,7 +46,7 @@ main = do
   findAndPrint conf g
 
 -- | check some formula on some graph This can also be used in ghci
-findAndPrint :: SolveConf -> Graph Char -> IO ()
+findAndPrint :: (Data a, Ord a, Show a) => SolveConf a b -> Graph a b -> IO ()
 findAndPrint conf g = do
   hSetBuffering stdout LineBuffering
   r <- findRun conf g

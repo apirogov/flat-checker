@@ -6,7 +6,6 @@ import Data.Graph.Inductive (Gr, mkGraph)
 
 import System.Clock
 
-import Types
 import Parse
 
 eitherToMaybe = either (const Nothing) Just
@@ -19,10 +18,12 @@ full n = mkGraph (zip [0..n-1] $ repeat ()) [(a,b,()) | a<-[0..n-1], b<-[0..n-1]
 currTime :: MonadIO m => m TimeSpec
 currTime = liftIO $ getTime Monotonic
 
--- | print time diff. of two time measurements in milliseconds
+-- | get time diff. of two time measurements in milliseconds
 msTimeDiff :: TimeSpec -> TimeSpec -> Double
 msTimeDiff a b = (/1000000) . fromIntegral . abs . toNanoSecs $ b-a
 
+-- | get time diff. of two time measurements in milliseconds as string
+showTime :: TimeSpec -> TimeSpec -> String
 showTime a b = show (msTimeDiff a b) ++ " ms"
 
 bench f = do
@@ -37,6 +38,5 @@ bench f = do
 formula = fromJust . eitherToMaybe . parseFormula
 
 -- | parse graph in dot format. exception on failure.
-dotFromFile :: String -> IO (Graph Char)
 dotFromFile f = readFile f >>= return . parseDot'
 

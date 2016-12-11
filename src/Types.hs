@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
-  Graph, nodes, edges, hasProp
+  Graph, LEdge, EdgeL(..), nodes, edges, hasProp, toEdge, edgeLabel, counters
 ) where
 -- required for formula
 import Data.Maybe (catMaybes)
@@ -20,6 +20,7 @@ import Control.Lens.TH
 import qualified Data.Set as S
 import Data.Set (Set)
 import qualified Data.Graph.Inductive as G
+import Data.Graph.Inductive (Gr, LEdge)
 
 -- | AST of an fLTL formula. Until ratios allowed: 0 < r <= 1
 data Formula a = Tru | Fls | Prop a | And (Formula a) (Formula a) | Or (Formula a) (Formula a)
@@ -72,19 +73,38 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 isLocal :: Data a => Formula a -> Bool
 isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
 
--- TODO: what kind of guards and updates on the graph are allowed?
--- data EdgeL b = GuardGE b Integer | GuardLT b Integer | UpdateInc b Integer
+-- | edges can be labelled with linear combinations of counters >= / < some value
+--  and an increment for each counter can be provided
+data EdgeL b = GuardGE [(Integer,b)] Integer | GuardLT [(Integer,b)] Integer | UpdateInc b Integer deriving (Show)
 
--- | atomic propositions indexed by a, start node always has id 0
-type Graph a = G.Gr (Set a) ()
+-- | atomic propositions indexed by a, counters indexed by b, start node always has id 0
+type Graph a b = Gr (Set a) [EdgeL b]
 
 -- | has node n of graph gr the atomic proposition p?
+hasProp :: (Ord a) => Graph a b -> a -> Int -> Bool
 hasProp gr p n = case G.lab gr n of
   Nothing -> False
   Just ps -> S.member p ps
 
-nodes :: Graph a -> [Int]
+-- | specialized for reexport
+nodes :: Graph a b -> [Int]
 nodes = G.nodes
 
-edges :: Graph a -> [(Int,Int)]
-edges = G.edges
+-- | specialized for reexport
+edges :: Graph a b -> [LEdge [EdgeL b]]
+edges = G.labEdges
+
+-- | specialized for reexport
+edgeLabel :: LEdge [EdgeL b] -> [EdgeL b]
+edgeLabel = G.edgeLabel
+
+-- | specialized for reexport
+toEdge :: LEdge [EdgeL b] -> (Int,Int)
+toEdge = G.toEdge
+
+-- | return a list of all counters used in given graph
+counters :: (Ord b) => Graph a b -> [b]
+counters gr = S.toList $ S.fromList $ concatMap (concatMap extract . G.edgeLabel) $ G.labEdges gr
+  where extract (UpdateInc b _) = [b]
+        extract (GuardGE xs _) = map snd xs
+        extract (GuardLT xs _) = map snd xs

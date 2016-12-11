@@ -1,6 +1,7 @@
 module Solve (
   SolveConf(..), defaultSolveConf, findRun, showRun
 ) where
+import Data.Data
 import Prelude hiding (log)
 import Data.Bool
 import Data.Ratio
@@ -32,8 +33,8 @@ isValidEdge validEdges isNid (fromVar,toVar) = mkOr =<< forM validEdges (\(i,j) 
 at var i j = (var V.! i) V.! j
 
 -- | configuration structure for the checker
-data SolveConf = SolveConf
-  { slvFormula    :: Formula Char -- ^ the fLTL formula to check
+data SolveConf a b = SolveConf
+  { slvFormula    :: Formula a    -- ^ the fLTL formula to check
   , slvSchemaSize :: Int          -- ^ schema size to use
   , slvGraphFile  :: String       -- ^ source file of the graph (not necessary for operation)
   , slvLoopLens   :: [Int]        -- ^ all simple loop lengths in graph (if empty, will be calculated)
@@ -42,6 +43,7 @@ data SolveConf = SolveConf
   , slvVerbose    :: Bool         -- ^ show additional information
   }
 -- | default configuration for the checker
+defaultSolveConf :: Formula a -> Int -> SolveConf a b
 defaultSolveConf f n = SolveConf f n "" [] False False False
 
 data PosVars = PosVars
@@ -71,7 +73,7 @@ mkAny f ls p = mkOr =<< mapM (flip f p) ls
 
 -- | input: graph structure and configuration with formula and settings
 --   output: valid run if possible
-findRun :: SolveConf -> Graph Char -> IO (Maybe Run)
+findRun :: (Data a, Ord a) => SolveConf a b -> Graph a b -> IO (Maybe Run)
 findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
@@ -180,7 +182,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   -- general assertions about path schema structure
   assert =<< mkForallI indices (\i -> mkAnd =<< sequence
     [ -- neighboring ids must have valid edge (check that non-looping path is valid)
-      ifT (i>0) $ isValidEdge ge isNid ((ids V.! (i-1)),(ids V.! i))
+      ifT (i>0) $ isValidEdge (toEdge <$> ge) isNid ((ids V.! (i-1)),(ids V.! i))
       -- enforce looptype structure (Out | Start (In*) End)*(Start (In*) End)
     , ifT (i>0) $ mkAnd =<< sequence (map join
         [ mkImplies <$> (isLtype Start (lt V.! i)) <*> (isLtype Out           (lt V.! (i-1)))
@@ -227,7 +229,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
 
     -- valid backloop and also loop length (restrict to possible lengths of simple loops in orig. graph)
     , join $ mkImplies <$> isLtype End (lt V.! i) <*> (mkAnd =<< sequence
-        [ isValidEdge ge isNid (ids V.! i, lst V.! i) -- valid backloop
+        [ isValidEdge (toEdge <$> ge) isNid (ids V.! i, lst V.! i) -- valid backloop
         , withLoopLen i $ const mkTrue              -- valid loop length
         ])
 
@@ -408,7 +410,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   where log = when verbose . liftIO . putStrLn
 
 -- | generate pretty-printed run string for output
-showRun :: Formula Char -> Run -> String
+showRun :: (Data a, Ord a, Show a) => Formula a -> Run -> String
 showRun f run = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lst,lln,lcs, uctrs], lbl])
   where rv = runPos run
         lp = runLHasPsi run
