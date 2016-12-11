@@ -1,2 +1,2 @@
-change encoding so that Z3 can find SMALLER models ? USED|UNUSED lane? leak out last loop info, used implies all asserts, end=used, next unused
+try exponential doubleing until some upper bound, then binary search to find a minimal run
 extend to guards/updates in kripke structure?

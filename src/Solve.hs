@@ -39,11 +39,10 @@ data SolveConf = SolveConf
   , slvLoopLens   :: [Int]        -- ^ all simple loop lengths in graph (if empty, will be calculated)
   , slvUseIntIds  :: Bool         -- ^ use ints for node ids instead of enum
   , slvUseBoolLT  :: Bool         -- ^ use pairs of bools for loop type instead of enum
-  , slvDynamicSz  :: Bool         -- ^ allow the found model to be smaller and padded by 0's
   , slvVerbose    :: Bool         -- ^ show additional information
   }
 -- | default configuration for the checker
-defaultSolveConf f n = SolveConf f n "" [] False False False False
+defaultSolveConf f n = SolveConf f n "" [] False False False
 
 data PosVars = PosVars
   { posId     :: Int              -- ^ node id at current position (first node: 0)
@@ -105,7 +104,7 @@ mkAny f ls p = mkOr =<< mapM (flip f p) ls
 -- | input: graph structure and configuration with formula and settings
 --   output: valid run if possible
 findRun :: SolveConf -> Graph Char -> IO (Maybe Run)
-findRun (SolveConf f n _ ml useIntIds useBoolLT dynsz verbose) gr = evalZ3 $ do
+findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
   lens <- case ml of
@@ -188,14 +187,12 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT dynsz verbose) gr = evalZ3 $ do
   --------------------------------------------------------------------------------------------------
   -- always start path at node 0
   assert =<< isNid 0 (ids V.! 0)
-  -- neighboring ids must have valid edge (check that non-looping path is valid)
-  assert =<< mkForallI [(i,j) | i<-init indices,let j=i+1] (\(i,j) -> isValidEdge ge isNid ((ids V.! i),(ids V.! j)))
 
   -- path ends with ending of a loop (we consider only infinite paths!)
-  assert =<< isLtype End (lt V.! (n-1))
-
+  assert =<< isLtype End (lt   V.! (n-1))
   -- force loop count = 0 in last loop (special case! all other lcnt are > 0)
-  assert =<< mkEq (lcnt V.! (n-1)) _0
+  assert =<< mkEq _0     (lcnt V.! (n-1))
+
   -- start counting steps at zero with lcnt[0]
   assert =<< mkEq (steps V.! 0) (lcnt V.! 0)
 
@@ -213,16 +210,14 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT dynsz verbose) gr = evalZ3 $ do
   let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
 
   -- general assertions about path schema structure
-  assert =<< mkForallI indices (\i-> mkAnd =<< sequence
+  assert =<< mkForallI indices (\i -> mkAnd =<< sequence
+    [ -- neighboring ids must have valid edge (check that non-looping path is valid)
+      ifT (i>0) $ isValidEdge ge isNid ((ids V.! (i-1)),(ids V.! i))
       -- enforce looptype structure (Out | Start (In*) End)*(Start (In*) End)
-    [ ifT (i>0 && i<n-1) $ mkAnd =<< sequence (map join
-        [ mkImplies <$> (isLtype Start (lt V.! i)) <*> (isOneOfLT [In,End]    (lt V.! (i+1)))
-        , mkImplies <$> (isLtype Start (lt V.! i)) <*> (isLtype Out           (lt V.! (i-1)))
-        , mkImplies <$> (isLtype End   (lt V.! i)) <*> (isLtype Out           (lt V.! (i+1)))
+    , ifT (i>0) $ mkAnd =<< sequence (map join
+        [ mkImplies <$> (isLtype Start (lt V.! i)) <*> (isLtype Out           (lt V.! (i-1)))
         , mkImplies <$> (isLtype End   (lt V.! i)) <*> (isOneOfLT [In,Start]  (lt V.! (i-1)))
-        , mkImplies <$> (isLtype In    (lt V.! i)) <*> (isOneOfLT [In,End]    (lt V.! (i+1)))
         , mkImplies <$> (isLtype In    (lt V.! i)) <*> (isOneOfLT [In,Start]  (lt V.! (i-1)))
-        , mkImplies <$> (isLtype Out   (lt V.! i)) <*> (isOneOfLT [Out,Start] (lt V.! (i+1)))
         , mkImplies <$> (isLtype Out   (lt V.! i)) <*> (isOneOfLT [Out,End]   (lt V.! (i-1)))
         ])
 
@@ -347,6 +342,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT dynsz verbose) gr = evalZ3 $ do
               [ pure $ lbl i psi
                 -- phi holds -> until works here if it holds in next position too
               , ifF (i<n-1) $ mkAnd =<< sequence [pure $ lbl i phi, pure $ lbl (i+1) j]
+                -- if we are at the last position, psi must hold somewhere at last loop
+              , ifF (i==n-1) $ mkExistsI [i-maxllen+1..i] (\k -> ifF (k>=0) $ mkAnd =<< sequence [pure $ at labels k psi, mkEq (lcnt V.! k) _0])
               ])
 
           u@(Until _ _ b) -> do -- this is the frequency until
