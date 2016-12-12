@@ -70,6 +70,7 @@ ltlformula = skipMany space *> (ptru <|> pfls <|> pprop <|> pnot <|> pnext <|> p
         binop = spaces *> andop <|> orop <|> untilop <* spaces
         pbinary = (\f op g -> op f g) <$> (sym "(" *> ltlformula) <*> (spaces *> binop <* spaces) <*> (ltlformula <* sym ")")
 
+-- | parse an edge label in the dot digraph
 parseedgel :: Parser [EdgeL String]
 parseedgel = edgel `sepBy` sym ";"
   where edgel = skipMany space *> (grd <|> upd)

@@ -46,7 +46,7 @@ main = do
   g <- readGraph $ slvGraphFile conf
   findAndPrint conf g
 
--- | check some formula on some graph This can also be used in ghci
+-- | check some formula on some graph. This can also be used in ghci
 findAndPrint :: (Data a, Ord a, Ord b, Show a, Show b) => SolveConf a b -> Graph a b -> IO ()
 findAndPrint conf g = do
   hSetBuffering stdout LineBuffering

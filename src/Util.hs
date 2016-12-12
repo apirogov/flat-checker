@@ -15,7 +15,7 @@ eitherToMaybe = either (const Nothing) Just
 -- | access 2-indexed variable
 at var i j = (var V.! i) V.! j
 
--- | fully connected graph of size n
+-- | fully connected graph of size n (e.g. to benchmark cycle search)
 full :: Int -> Gr () ()
 full n = mkGraph (zip [0..n-1] $ repeat ()) [(a,b,()) | a<-[0..n-1], b<-[0..n-1], a/=b]
 
