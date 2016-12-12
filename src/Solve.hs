@@ -7,7 +7,7 @@ import Data.Bool
 import Data.Ratio
 import Data.Maybe
 import Data.Char (isAlphaNum)
-import Data.List (intercalate, transpose)
+import Data.List (intercalate, transpose, sortOn)
 import qualified Data.Map as M
 import Data.Vector (Vector)
 import qualified Data.Vector as V
@@ -252,6 +252,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
         <*> (withLoopLen i (\l -> ifF (i-l >= 0) (mkAnd =<<<
         [ isLtype Out (lt V.! (i-l))
         , eqNid (ids V.! i) (ids V.! (i-l))
+        -- , allEq i (i-l) (snd <$> M.toList sfs) labels
         ])))
 
     -- enforce 1x unrolled right for efficient normal until checking (unless last loop)
@@ -260,6 +261,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
         <*> (withLoopLen i (\l -> ifF (i+l<=n-1) (mkAnd =<<<
         [ isLtype Out (lt V.! (i+l))
         , eqNid (ids V.! i) (ids V.! (i+l))
+        -- , allEq i (i+l) (snd <$> M.toList sfs) labels
         ])))
 
     -- enforce correct graph counter updates and guards
@@ -344,12 +346,12 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
             let psi = sfs M.! b
                 k   = untils M.! u -- get index of this evil until in evil until list
             -- implementation of the witness condition outside of loops. U[r]_j holds here if:
-            lbl_ij_equiv_to $ mkOr =<<<
+            lbl_ij_equiv_to (join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> mkOr =<<<
               [ pure $ lbl i psi   -- psi holds ...
               , mkAnd =<<< [ pure $ lhaspsi V.! k, mkGt (at ldeltas (maxllen-1) k) _0 ] -- or last loop is good and has psi ...
                 -- or there is a pos. k>i where psi holds guarded with at least >= current phi counter for U[r]_j
               , mkGe (at ucsufmax i k) (at uctrs i k)
-              ]
+              ])
       )
     ])
 
@@ -360,15 +362,16 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
       [ join $ mkIff (lhaspsi V.! j) <$> (mkExistsI [n-maxllen..n-1] (\i ->
           mkAnd =<<< [pure $ at labels i psi, mkEq (lcnt V.! i) _0]))
 
-        -- calculate counter suffix max: start out with worst possible value for maximum (semantically -inf)
-      , join $ mkEq (at ucsufmax (n-1) j)
-          <$> (mkAdd =<<< [mkInteger (-1), mkMul =<<< [pure $ steps V.! (n-1), mkInteger $ fromIntegral (-x)]])
+         -- calculate counter suffix max: start out with worst possible value for maximum (semantically -inf)
+         , join $ mkEq (at ucsufmax (n-1) j)
+             <$> (mkAdd =<<< [mkInteger (-1), mkMul =<<< [pure $ steps V.! (n-1), mkInteger $ fromIntegral (-x)]])
 
-        -- then, at psi positions take maximum of current and future, otherwise just push through
-      , mkForallI (init indices) (\i -> mkAnd =<<<
-          [ join $ mkImplies (at labels i psi) <$> (mkWithMax (at ucsufmax (i+1) j) (at uctrs i j)) (mkEq (at ucsufmax i j))
-          , join $ mkImplies <$> (mkNot $ at labels i psi) <*> mkEq (at ucsufmax i j) (at ucsufmax (i+1) j)
-          ])
+         -- then, at psi positions take maximum of current and future, otherwise just push through
+         , mkForallI (init indices) (\i -> mkAnd =<<<
+             [ join $ mkIte <$> (mkAnd =<<< [pure $ at labels i psi, isLtype Out (lt V.! i)])
+                            <*> (mkWithMax (at ucsufmax (i+1) j) (at uctrs i j)) (mkEq (at ucsufmax i j))
+                            <*> (mkEq (at ucsufmax i j) (at ucsufmax (i+1) j))
+             ])
       ])
 
   -------------------------------------------------------------------------------------------------------------------------------
@@ -393,7 +396,6 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
         getMat fun mat = fromMaybe V.empty . V.sequence <$> V.forM mat (\row -> mapEval fun m row)
 
     idvals <- getVec evalNid ids
-    -- ltvals <- fmap toLtype <$> (V.zip <$> getVec evalBool lt1 <*> getVec evalBool lt2)
     ltvals <- getVec evalLT lt
 
     lcntvals <- getVec evalInt lcnt
@@ -448,6 +450,8 @@ showRun f g run width = B.render $ B.vcat B.top rows
         showIfLoop (a,_) = show a
         sfs = enumerateSubformulas f
 
+        num = mkCol "N"  $ map (B.text . show) [1..length rv]
+        sep = mkCol "|"  $ map B.text (["|"] <* [1..length rv])
         ids = mkCol "ID" $ map (B.text . show       . posId) r
         lts = mkCol "LT" $ map (B.text . lsym       . posLType) r
         lst = mkCol "LS" $ map (B.text . showIfLoop . addLT posLStart) r
@@ -464,7 +468,7 @@ showRun f g run width = B.render $ B.vcat B.top rows
                 else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose $ ctrhdr:(map ((B.text "" :) . map (B.text . show) . V.toList . posGCtrs) r)
         ctrhdr = B.text "GC:" : (B.text . filter isAlphaNum . show <$> ctrs)
 
-        lblock = map B.text $ lines $ B.render $ B.hsep 1 B.left [ids,lts,lst,lln,lcs, uctrs, gctrs]
+        lblock = map B.text $ lines $ B.render $ B.hsep 1 B.left [num,sep,ids,lts,lst,lln,lcs, uctrs, gctrs]
         wl = B.cols $ head lblock
         -- if max. width provided, wrap labels
         labelfunc = case width of
@@ -473,7 +477,7 @@ showRun f g run width = B.render $ B.vcat B.top rows
 
         lbl = B.text "Labels:" : map (labelfunc . lbls . posLbls) r
         lblids = map fst . filter snd . zip [0..] . V.toList
-        lbls = intercalate ", " . map show . map (isfs M.!) . lblids
+        lbls = intercalate ", " . sortOn (\s -> (length s, s)) . map show . map (isfs M.!) . lblids
         isfs = M.fromList $ map (\(a,b) -> (b,a)) $ M.toList sfs --to map indices back to subformulas
 
         rows = zipWith (\a b -> B.hsep 4 B.top [a,b]) lblock (lbl++[B.nullBox])
