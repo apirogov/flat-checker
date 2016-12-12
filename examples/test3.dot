@@ -1,6 +1,6 @@
 /* e.g. try this formulae:
- ( ((aU[997/1000]c)&(bU[3/1000]c)) & F(c&FGe) ) with n=20
- ( ((aU[1/101]c)&(bU[100/101]c)) & F((a&Xb)&X((bU[1/101]d)&(cU[100/101]d))) ) with n=28
+ ( ((aU[997/1000]c)&(bU[3/1000]c)) & F(c&FGe) ) with n=16
+ ( ((aU[1/101]c)&(bU[100/101]c)) & F((a&Xb)&X((bU[1/101]d)&(cU[100/101]d))) ) with n=18
  */
 digraph G {
   0 [label="a"];

@@ -1,17 +1,27 @@
 /* e.g. try this formulae:
- ( ((aU[997/1000]c)&(bU[3/1000]c)) & F(c&FGe) ) with n=20
- ( ((aU[1/101]c)&(bU[100/101]c)) & F((a&Xb)&X((bU[1/101]d)&(cU[100/101]d))) ) with n=28
  */
 digraph G {
-  0 [label="a"];
-  1 [label="b"];
-  2 [label="c"];
-  3 [label="d"];
-  0 -> 1, 2;
-  1 -> 1 [label="  x += 2  "];
-  1 -> 0;
-  2 -> 2 [label="y += -3 ;b+=4; a+=-2"];
-  2 -> 0;
-  0 -> 3 [label="3x + 2y >= 0; -3x + -2y >= 0"];
-  3 -> 3;
+  0 [label="x"];
+  1 [label="a"];
+  2 [label="b"];
+  3 [label="c"];
+  4 [label="d"];
+  5 [label="w"];
+  6 [label="y"];
+  7 [label="z"];
+  0 -> 1;
+  1 -> 2 [label="x += 2"];
+  2 -> 2 [label="  x += 2  "];
+  2 -> 1;
+  1 -> 3 [label="y+=-3"];
+  3 -> 3 [label="y += -3"];
+  3 -> 1;
+  1 -> 4 [label="1x >= 10; 3x + 2y >= 0; -3x + -2y >= 0"];
+  4 -> 4;
+  0 -> 5;
+  5 -> 5 [label="x += 5; y+= -7"];
+  5 -> 6 [label="1x >= 100; 1x < 101"];
+  6 -> 6 [label="y += 7; x+= -5"];
+  6 -> 7 [label="1x + -1y >= 0 ; 1y + -1x >= 0"];
+  7 -> 7;
 }

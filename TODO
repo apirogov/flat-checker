@@ -1,2 +1,2 @@
+debugging, benchmarking, useful examples, refactoring, documentation, write everything down
 try exponential doubleing until some upper bound, then binary search to find a minimal run
-extend to guards/updates in kripke structure?

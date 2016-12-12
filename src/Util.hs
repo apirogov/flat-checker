@@ -4,11 +4,16 @@ import Control.Monad.IO.Class (liftIO, MonadIO)
 
 import Data.Graph.Inductive (Gr, mkGraph)
 
+import qualified Data.Vector as V
+
 import System.Clock
 
 import Parse
 
 eitherToMaybe = either (const Nothing) Just
+
+-- | access 2-indexed variable
+at var i j = (var V.! i) V.! j
 
 -- | fully connected graph of size n
 full :: Int -> Gr () ()

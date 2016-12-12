@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
-  Graph, LEdge, EdgeL(..), nodes, edges, hasProp, toEdge, edgeLabel, counters
+  Graph, LEdge, EdgeL(..), nodes, edges, hasProp, toEdge, edgeLabel, counters, updates, guards
 ) where
 -- required for formula
 import Data.Maybe (catMaybes)
@@ -73,9 +73,9 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 isLocal :: Data a => Formula a -> Bool
 isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
 
--- | edges can be labelled with linear combinations of counters >= / < some value
+-- | edges can be labelled with linear combinations of counters >=(true) / <(false) some value
 --  and an increment for each counter can be provided
-data EdgeL b = GuardGE [(Integer,b)] Integer | GuardLT [(Integer,b)] Integer | UpdateInc b Integer deriving (Show)
+data EdgeL b = GuardGE Bool [(Integer,b)] Integer | UpdateInc b Integer deriving (Show)
 
 -- | atomic propositions indexed by a, counters indexed by b, start node always has id 0
 type Graph a b = Gr (Set a) [EdgeL b]
@@ -85,6 +85,19 @@ hasProp :: (Ord a) => Graph a b -> a -> Int -> Bool
 hasProp gr p n = case G.lab gr n of
   Nothing -> False
   Just ps -> S.member p ps
+
+-- | filter out the updates stored at an edge
+updates :: (Ord b) => [EdgeL b] -> Map b Integer
+updates xs = M.fromList $ catMaybes $ map getUpdate xs
+  where getUpdate (UpdateInc b i) = Just (b,i)
+        getUpdate _ = Nothing
+
+-- | filter out the GE guards stored at an edge, repacked in a tuple (neg.,([lin.comb.], const.))
+--   LT guards are GE guards with neg. flag = True
+guards :: [EdgeL b] -> [(Bool, ([(Integer,b)], Integer))]
+guards xs = catMaybes $ map getGuard xs
+  where getGuard (GuardGE neg vs c) = Just (neg, (vs, c))
+        getGuard _ = Nothing
 
 -- | specialized for reexport
 nodes :: Graph a b -> [Int]
@@ -106,5 +119,4 @@ toEdge = G.toEdge
 counters :: (Ord b) => Graph a b -> [b]
 counters gr = S.toList $ S.fromList $ concatMap (concatMap extract . G.edgeLabel) $ G.labEdges gr
   where extract (UpdateInc b _) = [b]
-        extract (GuardGE xs _) = map snd xs
-        extract (GuardLT xs _) = map snd xs
+        extract (GuardGE _ xs _) = map snd xs

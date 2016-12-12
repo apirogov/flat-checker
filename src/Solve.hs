@@ -6,7 +6,8 @@ import Prelude hiding (log)
 import Data.Bool
 import Data.Ratio
 import Data.Maybe
-import Data.List (intercalate)
+import Data.Char (isAlphaNum)
+import Data.List (intercalate, transpose)
 import qualified Data.Map as M
 import Data.Vector (Vector)
 import qualified Data.Vector as V
@@ -20,17 +21,9 @@ import qualified Text.PrettyPrint.Boxes as B
 
 import qualified Data.IntSet as IS
 import Cycles (getCycleLens)
-import Util (currTime, showTime)
+import Util (currTime, showTime, at)
 import Types
 import Z3Util
-
--- | given valid edges and two variable syms, enumerate all valid assignments
--- isValidEdge :: [(Int,Int)] -> Vector AST -> (AST,AST) -> Z3 AST
-isValidEdge validEdges isNid (fromVar,toVar) = mkOr =<< forM validEdges (\(i,j) ->
-  mkAnd =<< sequence [isNid i fromVar, isNid j toVar])
-
--- | helper: access 2-indexed variable
-at var i j = (var V.! i) V.! j
 
 -- | configuration structure for the checker
 data SolveConf a b = SolveConf
@@ -55,6 +48,7 @@ data PosVars = PosVars
   , posLLen   :: Integer          -- ^ length of current loop (outside: 0)
 
   , posLbls    :: Vector Bool     -- ^ for each subformula, flag whether it holds at this position
+  , posGCtrs   :: Vector Integer  -- ^ intermediate values of counters defined by the graph
   , posUCtrs   :: Vector Integer  -- ^ intermediate values of counters of the structure
   , posUSufMax :: Vector Integer  -- ^ back-propagated maximum of future values of counters
   }
@@ -68,12 +62,9 @@ data Run = Run
 -- | loop type enum, different encodings in Z3 can be toggled
 data LoopType = Out | Start | In | End deriving (Eq, Read, Show, Ord)
 
--- | is one of given items mapped by some value
-mkAny f ls p = mkOr =<< mapM (flip f p) ls
-
 -- | input: graph structure and configuration with formula and settings
 --   output: valid run if possible
-findRun :: (Data a, Ord a) => SolveConf a b -> Graph a b -> IO (Maybe Run)
+findRun :: (Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
 findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   when (n<=0) $ error "path schema must have positive size!"
 
@@ -107,9 +98,18 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   let indices = [0..n-1]            -- helper to quantify over indices of variables
   let ge = edges gr                 -- get directed edges of graph
 
+  -- mapping from counters in graph to their indices
+  let ctrs = counters gr
+  let ctr2num = M.fromList $ zip ctrs [(0::Int)..]
+
   -- variables to store node ids of path schema
   (EnumAPI mkFreshNodeVar evalNid isNid eqNid) <- bool (mkEnumSort "Nid") mkIntEnumSort useIntIds $ (nodes gr) ++ [-1]
   ids <- mkVarVec mkFreshNodeVar "nid" indices
+
+  -- | given an edge and a pair of variable node ids, express that they represent this edge
+  let isEdge (i,j) (fromVar,toVar) = mkAnd =<< sequence [isNid i fromVar, isNid j toVar]
+  -- | given valid edges and two variable syms, enumerate all valid assignments
+  let isValidEdge = mkAny isEdge (toEdge <$> ge)
 
   -- variables to indicate loop structure
   -- no self loops, only "simple" loops (no internal id equal to left or right border)
@@ -151,8 +151,15 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   ldeltas  <- mkVarMat mkFreshIntVar  "ld" [1..maxllen] uindices
   -- last loop has psi of U[r]_j ?
   lhaspsi  <- mkVarVec mkFreshBoolVar "lp" uindices
-  -- helper: last loop has psi and is good
-  lnice    <- mkVarVec mkFreshBoolVar "lpd" uindices
+
+  -- values for graph counters, similar to uctrs
+  let cindices = [0..length ctrs-1]
+  gctrs <- mkVarMat mkFreshIntVar "gct" indices cindices
+
+  -- linear combination of variables at position i
+  let lincomb i lc = mkAdd =<< mapM (\(c,var) -> mkMul =<< sequence [mkInteger c, pure $ at gctrs i $ ctr2num M.! var]) lc
+  -- constraint that the variables at position i should respect the given guard
+  let respectGuardAt i (t,(lc,v)) = join $ (if t then mkLt else mkGe) <$> lincomb i lc <*> (mkInteger v)
 
   --------------------------------------------------------------------------------------------------
   -- always start path at node 0
@@ -172,17 +179,20 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   -- all until phi freq. counters start at 0
   assert =<< mkForallI (M.toList untils) (\(_,j) -> mkEq (at uctrs 0 j) _0)
 
+  -- all user defined counters start at 0
+  assert =<< mkForallI cindices (\i -> mkEq (at gctrs 0 i) _0)
+
   -- helper: f shall hold with one of the valid loop lengths
   let withLoopLen i prop = mkExistsI lens (\l -> mkAnd =<< sequence [join $ mkEq (llen V.! i) <$> (mkInteger $ fromIntegral l), prop l])
   -- helper: a + c = b, where c const
   let isInc c a b = join $ mkEq b <$> (mkAdd =<< sequence [mkInteger $ fromIntegral c, pure a])
   -- helper: forall j. mat[i][j] = mat[i2][j]
-  let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
+  -- let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
 
   -- general assertions about path schema structure
   assert =<< mkForallI indices (\i -> mkAnd =<< sequence
     [ -- neighboring ids must have valid edge (check that non-looping path is valid)
-      ifT (i>0) $ isValidEdge (toEdge <$> ge) isNid ((ids V.! (i-1)),(ids V.! i))
+      ifT (i>0) $ isValidEdge (ids V.! (i-1), ids V.! i)
       -- enforce looptype structure (Out | Start (In*) End)*(Start (In*) End)
     , ifT (i>0) $ mkAnd =<< sequence (map join
         [ mkImplies <$> (isLtype Start (lt V.! i)) <*> (isLtype Out           (lt V.! (i-1)))
@@ -229,32 +239,44 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
 
     -- valid backloop and also loop length (restrict to possible lengths of simple loops in orig. graph)
     , join $ mkImplies <$> isLtype End (lt V.! i) <*> (mkAnd =<< sequence
-        [ isValidEdge (toEdge <$> ge) isNid (ids V.! i, lst V.! i) -- valid backloop
-        , withLoopLen i $ const mkTrue              -- valid loop length
+        [ isValidEdge (ids V.! i, lst V.! i) -- valid backloop
+        , withLoopLen i $ const mkTrue       -- valid loop length
         ])
 
     -- the following unrollings enforce that the loops satisfy all until label
     -- conditions, as only such loops can be chosen which don't need to be split
 
-    -- enforce 2x unrolled left (same ids, labels, guards and updates, but outside of loop)
-    , join $ mkImplies <$> (mkNot =<< isLtype Out (lt V.! i)) <*> (withLoopLen i (\l -> ifF (i-2*l>=0) (mkAnd =<< sequence
+    -- enforce 1x unrolled left (same ids, but outside of loop)
+    -- required for checking the graph guards
+    , join $ mkImplies <$> (mkNot =<< isLtype Out (lt V.! i))
+        <*> (withLoopLen i (\l -> ifF (i-l >= 0) (mkAnd =<< sequence
         [ isLtype Out (lt V.! (i-l))
-        , isLtype Out (lt V.! (i-2*l))
         , eqNid (ids V.! i) (ids V.! (i-l))
-        , eqNid (ids V.! i) (ids V.! (i-2*l))
-        , allEq i (i-l)   (snd <$> M.toList sfs) labels
-        , allEq i (i-2*l) (snd <$> M.toList sfs) labels
         ])))
 
-    -- enforce 1x unrolled right (unless last loop)
+    -- enforce 1x unrolled right for efficient normal until checking (unless last loop)
+    -- this is required for the regular until to check psi and to check graph guards
     , join $ mkImplies <$> (mkAnd =<< sequence [mkNot =<< isLtype Out (lt V.! i), mkNot =<< (mkEq (lcnt V.! i) _0)])
         <*> (withLoopLen i (\l -> ifF (i+l<=n-1) (mkAnd =<< sequence
         [ isLtype Out (lt V.! (i+l))
         , eqNid (ids V.! i) (ids V.! (i+l))
-        , allEq i (i+l) (snd <$> M.toList sfs) labels
         ])))
 
-    -- enforce correct counter updates
+    -- enforce correct graph counter updates and guards
+    , ifT (i>0) $ mkForallI ge (\(a,b,l) -> do
+        let (upd, grd) = (updates l, guards l)
+        join $ mkImplies <$> isEdge (a,b) (ids V.! (i-1), ids V.! i) <*> (mkAnd =<< sequence
+          [ -- update graph counters corresponding to edge labelling
+            mkForallI ctrs (\ctr -> do
+              let (j, u) = (ctr2num M.! ctr, fromMaybe 0 $ M.lookup ctr upd)
+              join $ mkEq (at gctrs i j) <$> (mkAdd =<< sequence [pure $ at gctrs (i-1) j,
+                                                        mkMul =<< sequence [mkInteger u, pure $ lcnt V.! (i-1)]]))
+            -- guards are respected outside loops. as each loop is unrolled in
+            -- both directions and a loop has a constant delta, this is sufficient
+          , join $ mkImplies <$> (isLtype Out (lt V.! (i-1))) <*> mkForallI grd (respectGuardAt i)
+          ]))
+
+    -- enforce correct until counter updates
     , mkForallI (M.toList untils) (\((Until r a _), j) -> do
       let phi    = sfs M.! a
           (x, y) = (numerator r, denominator r)
@@ -297,12 +319,14 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
           And _ _ -> lbl_ij_equiv_to $ mkAnd (lbl i <$> subf)
           Or _ _ ->  lbl_ij_equiv_to $ mkOr  (lbl i <$> subf)
           Not _ ->   lbl_ij_equiv_to $ mkNot (head $ lbl i <$> subf)
+
           -- for next the subf. must hold on all successors -> next node and backloop if any
           Next _ ->  lbl_ij_equiv_to $ mkAnd =<< sequence
             [ ifT (i<n-1) $ mkAnd (lbl (i+1) <$> subf) -- subf. must hold in succ. node
             -- backloop edge -> must check that subformula holds in target
             , join $ mkImplies <$> (isLtype End (lt V.! i)) <*> withLoopLen i (\l -> ifF (i-l+1>=0) $ mkAnd (lbl (i-l+1) <$> subf))
             ]
+
           -- need to consider subformulas in until separately.. get their subformula index and set constraints
           Until 1 a b -> do -- this is the regular until
             let (phi, psi) = (sfs M.! a, sfs M.! b)
@@ -322,7 +346,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
             -- implementation of the witness condition outside of loops. U[r]_j holds here if:
             lbl_ij_equiv_to $ (mkOr =<< sequence
               [ pure $ lbl i psi   -- psi holds ...
-              , pure $ lnice V.! k -- or last loop is good and has psi ...
+              , mkAnd =<< sequence [ pure $ lhaspsi V.! k, mkGt (at ldeltas (maxllen-1) k) _0 ] -- or last loop is good and has psi ...
                 -- or there is a pos. k>i where psi holds guarded with at least >= current phi counter for U[r]_j
               , mkGe (at ucsufmax i k) (at uctrs i k)
               ])
@@ -335,9 +359,6 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
         -- for which U[r]'s do we have a psi in the last loop?
       [ join $ mkIff (lhaspsi V.! j) <$> (mkExistsI [n-maxllen..n-1] (\i ->
           mkAnd =<< sequence [pure $ at labels i psi, mkEq (lcnt V.! i) _0]))
-
-        -- last loop is "nice" to an evil until if it has the psi and has good phi balance
-      , join $ mkIff (lnice V.! j) <$> (mkAnd =<< sequence [ pure $ lhaspsi V.! j, mkGt (at ldeltas (maxllen-1) j) _0 ])
 
         -- calculate counter suffix max: start out with worst possible value for maximum (semantically -inf)
       , join $ mkEq (at ucsufmax (n-1) j)
@@ -386,6 +407,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
 
     lblvals <- getMat evalBool labels
 
+    gcvals <- getMat evalInt gctrs
+
     lpvals <- getVec evalBool lhaspsi
     ldvals <- getVec evalInt $ ldeltas V.! (maxllen-1)
 
@@ -403,6 +426,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
       , posUSufMax = usvals V.! i
 
       , posLbls = lblvals V.! i
+
+      , posGCtrs = gcvals V.! i
       })) lpvals ldvals
   end2 <- currTime
   log $ "Finished after: "++showTime start2 end2
@@ -410,12 +435,13 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   where log = when verbose . liftIO . putStrLn
 
 -- | generate pretty-printed run string for output
-showRun :: (Data a, Ord a, Show a) => Formula a -> Run -> String
-showRun f run = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lst,lln,lcs, uctrs], lbl])
+showRun :: (Data a, Ord a, Ord b, Show a, Show b) => Formula a -> Graph a b -> Run -> Maybe Int -> String
+showRun f g run width = B.render $ B.vcat B.top rows
   where rv = runPos run
         lp = runLHasPsi run
         ld = runLDelta run
         r = V.toList rv
+        ctrs = counters g
 
         mkCol name cells = (B.text name) B.// (B.vcat B.top cells)
         addLT fun p = (fun p, posLType p)
@@ -434,15 +460,24 @@ showRun f run = B.render (B.hsep 4 B.left [B.hsep 1 B.left [ids,lts,lst,lln,lcs,
                 else mkCol "[(UC,UM)_j]" $ (map (B.text . show . (\p -> V.zip (posUCtrs p) (posUSufMax p))) r) ++ [lastloopinfo]
         lastloopinfo = B.text $ intercalate ", " $ V.toList $ V.zipWith (\a b->a++"/"++b) (V.map show lp) (V.map goodness ld)
 
-        lbl = mkCol "Labels" $ map (B.text . lbls . posLbls) r
-        lblids = map fst . filter ((==True).snd) . zip [0..] . V.toList
+        -- show graph counter col if any counters present
+        gctrs = if V.null (posGCtrs $ V.head $ rv) then B.nullBox
+                else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose $ ctrhdr:(map ((B.text "" :) . map (B.text . show) . V.toList . posGCtrs) r)
+        ctrhdr = B.text "GC:" : (B.text . filter isAlphaNum . show <$> ctrs)
+
+        lblock = map B.text $ lines $ B.render $ B.hsep 1 B.left [ids,lts,lst,lln,lcs, uctrs, gctrs]
+        wl = B.cols $ head lblock
+        -- if max. width provided, wrap labels
+        labelfunc = case width of
+                      Nothing -> B.text
+                      Just w -> B.para B.left $ w-wl-4
+
+        lbl = B.text "Labels:" : map (labelfunc . lbls . posLbls) r
+        lblids = map fst . filter snd . zip [0..] . V.toList
         lbls = intercalate ", " . map show . map (isfs M.!) . lblids
         isfs = M.fromList $ map (\(a,b) -> (b,a)) $ M.toList sfs --to map indices back to subformulas
 
-        -- this representation looks too noisy for big formulae:
-        -- lbl = B.hsep 1 B.left $ map (B.vcat B.top) $ transpose $ lblhdr:(map ((B.text "" :) . map (B.text . (\(a,t) -> if t then show a else "")) . zip ssfs . V.toList . posLbls) r)
-        -- ssfs = map fst $ sortOn snd $ M.toList sfs
-        -- lblhdr = B.text "Labels:" : (ssfs *> pure (B.text ""))
+        rows = zipWith (\a b -> B.hsep 4 B.top [a,b]) lblock (lbl++[B.nullBox])
 
         lsym Start = "<"
         lsym End = "-"

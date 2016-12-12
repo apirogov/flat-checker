@@ -1,6 +1,7 @@
 module Main where
 import Data.Data
 import System.IO (hSetBuffering, BufferMode(..), stdout)
+import System.Console.Terminal.Size
 import System.Directory (doesFileExist)
 import Options.Applicative
 
@@ -46,12 +47,13 @@ main = do
   findAndPrint conf g
 
 -- | check some formula on some graph This can also be used in ghci
-findAndPrint :: (Data a, Ord a, Show a) => SolveConf a b -> Graph a b -> IO ()
+findAndPrint :: (Data a, Ord a, Ord b, Show a, Show b) => SolveConf a b -> Graph a b -> IO ()
 findAndPrint conf g = do
   hSetBuffering stdout LineBuffering
+  w <- maybe Nothing (Just . width) <$> size
   r <- findRun conf g
   case r of
-    Just run -> putStrLn "Solution:" >> putStrLn (showRun (slvFormula conf) run)
+    Just run -> putStrLn "Solution:" >> putStrLn (showRun (slvFormula conf) g run w)
     Nothing -> putStrLn "No solution found."
 
 -- | unsafe REPL helper. tries to load graph, parse formula and solve. can throw exceptions

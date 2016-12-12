@@ -75,14 +75,14 @@ parseedgel = edgel `sepBy` sym ";"
   where edgel = skipMany space *> (grd <|> upd)
         ctr = (:) <$> letter <*> many alphaNum
         upd = UpdateInc <$> ctr <*> (sym "+=" *> (fromIntegral <$> parseint) <* spaces)
-        grdge = string ">=" *> spaces *> pure GuardGE
-        grdlt = string "<" *> spaces *> pure GuardLT
+        grdge = string ">=" *> spaces *> pure False
+        grdlt = string "<"  *> spaces *> pure True
         lincomb = ((,) <$> (fromIntegral <$> parseint) <*> (ctr <* spaces)) `sepBy1` (char '+' *> spaces)
         grd = do
           comb <- lincomb
           op <- grdge <|> grdlt
           cst <- fromIntegral <$> parseint
-          return $ op comb cst
+          return $ GuardGE op comb cst
 
 -- | load a digraph from a dot file. needs IO to catch failure
 parseDot :: String -> IO (Maybe (Graph Char String))

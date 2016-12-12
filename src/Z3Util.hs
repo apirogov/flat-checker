@@ -81,6 +81,10 @@ mkExistsI :: [a] -> (a -> Z3 AST) -> Z3 AST
 mkExistsI [] _ = mkFalse
 mkExistsI ind f = mkOr =<< forM ind f
 
+-- | b has one of the a values
+mkAny :: (a -> b -> Z3 AST) -> [a] -> b -> Z3 AST
+mkAny f ls p = mkOr =<< forM ls (flip f p)
+
 -- | if (a>b) then f(a) else f(b) .ite is MUCH faster than using implications here
 mkWithMax a b f = join $ mkIte <$> mkGt a b <*> f a <*> f b
 
@@ -98,3 +102,4 @@ varname pref ind = intercalate "_" $ pref:(map show ind)
 mkVarVec mkf name is = V.fromList <$> forM is (\i -> mkf $ varname name [i])
 -- | allocate a matrix of variable symbols with given prefix, indexed over is and js
 mkVarMat mkf name is js = V.fromList <$> forM is (\i -> mkVarVec mkf (varname name [i]) js)
+
