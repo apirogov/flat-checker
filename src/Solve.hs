@@ -281,10 +281,9 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
     , mkForallI (M.toList untils) (\((Until r a _), j) -> do
       let phi    = sfs M.! a
           (x, y) = (numerator r, denominator r)
-          withUpdateAt k prop = mkAnd =<<<                        -- let r=x/y is the ratio at U[r]). do something with...
-            [ join $ mkImplies           (at labels k phi) <$> prop (fromIntegral (y-x)) -- positive update if phi holds: y-x
-            , join $ mkImplies <$> mkNot (at labels k phi) <*> prop (fromIntegral (-x) ) -- and negative if it does not:  -x
-            ]
+          -- let r=x/y is the ratio at U[r]). do something with...
+          withUpdateAt k prop = join $ mkIte (at labels k phi) <$> prop (fromIntegral (y-x)) -- positive update if phi holds: y-x
+                                                               <*> prop (fromIntegral (-x) ) -- and negative if it does not:  -x
       mkAnd =<<<
           -- counter value at i>0 = old value at i-1 + update on edge from i-1 times the number of visits of i-1
           -- (proportional to number of node visits, semantically invalid inside loops, just used as accumulator there)
@@ -366,12 +365,11 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
          , join $ mkEq (at ucsufmax (n-1) j)
              <$> (mkAdd =<<< [mkInteger (-1), mkMul =<<< [pure $ steps V.! (n-1), mkInteger $ fromIntegral (-x)]])
 
-         -- then, at psi positions take maximum of current and future, otherwise just push through
-         , mkForallI (init indices) (\i -> mkAnd =<<<
-             [ join $ mkIte <$> (mkAnd =<<< [pure $ at labels i psi, isLtype Out (lt V.! i)])
-                            <*> (mkWithMax (at ucsufmax (i+1) j) (at uctrs i j)) (mkEq (at ucsufmax i j))
-                            <*> (mkEq (at ucsufmax i j) (at ucsufmax (i+1) j))
-             ])
+         -- then, at psi positions take maximum of current and future, otherwise just push through (just update outside loops)
+         , mkForallI (init indices) (\i -> join $
+             mkIte <$> (mkAnd =<<< [pure $ at labels i psi, isLtype Out (lt V.! i)])
+                   <*> (mkWithMax (at ucsufmax (i+1) j) (at uctrs i j)) (mkEq (at ucsufmax i j))
+                   <*> (mkEq (at ucsufmax i j) (at ucsufmax (i+1) j)))
       ])
 
   -------------------------------------------------------------------------------------------------------------------------------
