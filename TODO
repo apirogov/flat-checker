@@ -1,2 +1,4 @@
+allow more liberal annotation of dot graph
+think about more general graph guards with and/or/not
 debugging, benchmarking, useful examples, refactoring, documentation, write everything down
-try exponential doubleing until some upper bound, then binary search to find a minimal run
+automate exponential doubleing until some upper bound, then binary search to find a minimal run

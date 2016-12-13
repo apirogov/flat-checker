@@ -49,7 +49,8 @@ data PosVars = PosVars
 
   , posLbls    :: Vector Bool     -- ^ for each subformula, flag whether it holds at this position
   , posGCtrs   :: Vector Integer  -- ^ intermediate values of counters defined by the graph
-  , posUCtrs   :: Vector Integer  -- ^ intermediate values of counters of the structure
+  , posUDCtrs   :: Vector Integer  -- ^ intermediate values of counters of the structure (delta)
+  , posUWCtrs   :: Vector Integer  -- ^ intermediate values of counters of the structure (witness)
   , posUSufMax :: Vector Integer  -- ^ back-propagated maximum of future values of counters
   }
 
@@ -139,8 +140,10 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   let numUntils = length untils
   let uindices = [1..numUntils]
   -- vars per state and U-formula: X[i][j] i=current schema state, j=number U-formula counter
-  -- intermediate counter values
-  uctrs    <- mkVarMat mkFreshIntVar "uct" indices uindices
+  -- intermediate counter values (total effect)
+  udctrs    <- mkVarMat mkFreshIntVar "ud" indices uindices
+  -- intermediate counter values (in loops for first iteration)
+  uwctrs    <- mkVarMat mkFreshIntVar "uw" indices uindices
   -- maximum of all future countervalues encountered at psis of U-formula j
   ucsufmax <- mkVarMat mkFreshIntVar "usm" indices uindices
 
@@ -176,7 +179,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   assert =<< mkEq (V.last $ labels V.! 0) _T
 
   -- all until phi freq. counters start at 0
-  assert =<< mkForallI (M.toList untils) (\(_,j) -> mkEq (at uctrs 0 j) _0)
+  assert =<< mkForallI (M.toList untils) (\(_,j) -> mkEq (at udctrs 0 j) _0)
+  assert =<< mkForallI (M.toList untils) (\(_,j) -> mkEq (at uwctrs 0 j) _0)
 
   -- all user defined counters start at 0
   assert =<< mkForallI cindices (\i -> mkEq (at gctrs 0 i) _0)
@@ -188,7 +192,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   -- helper: a + x*C = b, C const
   let isIncMul c x a b = join $ mkEq b <$> (mkAdd =<<< [pure a,  mkMul =<<< [mkInteger c, pure x]])
   -- helper: forall j. mat[i][j] = mat[i2][j]
-  -- let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
+  let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
 
   -- general assertions about path schema structure
   assert =<< mkForallI indices (\i -> mkAnd =<<<
@@ -252,7 +256,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
         <*> (withLoopLen i (\l -> ifF (i-l >= 0) (mkAnd =<<<
         [ isLtype Out (lt V.! (i-l))
         , eqNid (ids V.! i) (ids V.! (i-l))
-        -- , allEq i (i-l) (snd <$> M.toList sfs) labels
+        , allEq i (i-l) (snd <$> M.toList sfs) labels
         ])))
 
     -- enforce 1x unrolled right for efficient normal until checking (unless last loop)
@@ -261,7 +265,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
         <*> (withLoopLen i (\l -> ifF (i+l<=n-1) (mkAnd =<<<
         [ isLtype Out (lt V.! (i+l))
         , eqNid (ids V.! i) (ids V.! (i+l))
-        -- , allEq i (i+l) (snd <$> M.toList sfs) labels
+        , allEq i (i+l) (snd <$> M.toList sfs) labels
         ])))
 
     -- enforce correct graph counter updates and guards
@@ -289,7 +293,13 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
           -- (proportional to number of node visits, semantically invalid inside loops, just used as accumulator there)
           -- notice: counter value in last loop does not change (lcnt==0!) but it does not matter, see at loop delta to decide whether its a good loop
         [ ifT (i>0) $ withUpdateAt (i-1) $ \u ->
-            isIncMul u (lcnt V.! (i-1)) (at uctrs (i-1) j) (at uctrs i j)
+            isIncMul u (lcnt V.! (i-1)) (at udctrs (i-1) j) (at udctrs i j)
+          -- counter update for witness counters. count updates just once, but synchronize after loops with delta counters
+        , ifT (i>0) $ withUpdateAt (i-1) $ \u -> join $
+            mkIte <$> (isLtype End (lt V.! (i-1)))
+                  <*> (mkEq (at udctrs i j) (at uwctrs i j))
+                  <*> (isInc u (at uwctrs (i-1) j) (at uwctrs i j))
+
 
           -- accumulate loop deltas for last loop (we have only maxllen positions, at right of the schema)
         , let i' = n-maxllen+i in
@@ -345,11 +355,11 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
             let psi = sfs M.! b
                 k   = untils M.! u -- get index of this evil until in evil until list
             -- implementation of the witness condition outside of loops. U[r]_j holds here if:
-            lbl_ij_equiv_to (join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> mkOr =<<<
+            join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> lbl_ij_equiv_to (mkOr =<<<
               [ pure $ lbl i psi   -- psi holds ...
               , mkAnd =<<< [ pure $ lhaspsi V.! k, mkGt (at ldeltas (maxllen-1) k) _0 ] -- or last loop is good and has psi ...
                 -- or there is a pos. k>i where psi holds guarded with at least >= current phi counter for U[r]_j
-              , mkGe (at ucsufmax i k) (at uctrs i k)
+              , mkGe (at ucsufmax i k) (at uwctrs i k)
               ])
       )
     ])
@@ -365,11 +375,10 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
          , join $ mkEq (at ucsufmax (n-1) j)
              <$> (mkAdd =<<< [mkInteger (-1), mkMul =<<< [pure $ steps V.! (n-1), mkInteger $ fromIntegral (-x)]])
 
-         -- then, at psi positions take maximum of current and future, otherwise just push through (just update outside loops)
+         -- then, at psi positions take maximum of current and future, otherwise just push through
          , mkForallI (init indices) (\i -> join $
-             mkIte <$> (mkAnd =<<< [pure $ at labels i psi, isLtype Out (lt V.! i)])
-                   <*> (mkWithMax (at ucsufmax (i+1) j) (at uctrs i j)) (mkEq (at ucsufmax i j))
-                   <*> (mkEq (at ucsufmax i j) (at ucsufmax (i+1) j)))
+             mkIte (at labels i psi) <$> (mkWithMax (at ucsufmax (i+1) j) (at uwctrs i j)) (mkEq (at ucsufmax i j))
+                                     <*> (mkEq (at ucsufmax i j) (at ucsufmax (i+1) j)))
       ])
 
   -------------------------------------------------------------------------------------------------------------------------------
@@ -401,7 +410,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
     lctrvals <- getVec evalInt lctr
     llenvals <- getVec evalInt llen
 
-    ucvals <- getMat evalInt uctrs
+    udvals <- getMat evalInt udctrs
+    uwvals <- getMat evalInt uwctrs
     usvals <- getMat evalInt ucsufmax
 
     lblvals <- getMat evalBool labels
@@ -421,7 +431,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
       , posLCtr = lctrvals V.! i
       , posLLen = llenvals V.! i
 
-      , posUCtrs = ucvals V.! i
+      , posUDCtrs = udvals V.! i
+      , posUWCtrs = uwvals V.! i
       , posUSufMax = usvals V.! i
 
       , posLbls = lblvals V.! i
@@ -447,6 +458,7 @@ showRun f g run width = B.render $ B.vcat B.top rows
         showIfLoop (_,Out) = ""
         showIfLoop (a,_) = show a
         sfs = enumerateSubformulas f
+        untils = map fst $ sortOn snd $ M.toList $ getEvilUntils sfs
 
         num = mkCol "N"  $ map (B.text . show) [1..length rv]
         sep = mkCol "|"  $ map B.text (["|"] <* [1..length rv])
@@ -457,9 +469,14 @@ showRun f g run width = B.render $ B.vcat B.top rows
         lcs = mkCol "LC" $ map (B.text . lcount     . posLCount) r
 
         -- show counter column only if there are any
+        -- uctrs = if V.null lp then B.nullBox
+        --         else mkCol "[(UD,UW,UM)_j]" $ (map (B.text . show . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufMax p))) r) ++ [lastloopinfo]
         uctrs = if V.null lp then B.nullBox
-                else mkCol "[(UC,UM)_j]" $ (map (B.text . show . (\p -> V.zip (posUCtrs p) (posUSufMax p))) r) ++ [lastloopinfo]
-        lastloopinfo = B.text $ intercalate ", " $ V.toList $ V.zipWith (\a b->a++"/"++b) (V.map show lp) (V.map goodness ld)
+                else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose
+                     $ (map (B.text . show) untils):
+                       (map (map (B.text . show) . V.toList . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufMax p))) r)
+                       ++[lastloopinfo]
+        lastloopinfo = map B.text $ V.toList $ V.zipWith (\a b->a++"/"++b) (V.map show lp) (V.map goodness ld)
 
         -- show graph counter col if any counters present
         gctrs = if V.null (posGCtrs $ V.head $ rv) then B.nullBox
