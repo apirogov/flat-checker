@@ -1,12 +1,12 @@
 /* e.g. try this formula: ( ( Xa & F(z&XF(z&XFz)) ) & XX((q|(pUz))UGb) ) */
 digraph G {
-  0 [label="ac"];
-  1 [label="p"];
-  2 [label="z"];
-  3 [label="q"];
-  4 [label="p"];
-  5 [label="z"];
-  6 [label="b"];
+  0 [props="{a,c}"];
+  1 [props="{p}"];
+  2 [props="{z}"];
+  3 [props="{q}"];
+  4 [props="{p}"];
+  5 [props="{z}"];
+  6 [props="{b}"];
   0 -> 0, 1;
   1 -> 2 -> 3 -> 4;
   4 -> 1, 5;

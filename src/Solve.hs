@@ -161,7 +161,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   -- linear combination of variables at position i
   let lincomb i lc = mkAdd =<< mapM (\(c,var) -> mkMul =<<< [mkInteger c, pure $ at gctrs i $ ctr2num M.! var]) lc
   -- constraint that the variables at position i should respect the given guard
-  let respectGuardAt i (t,(lc,v)) = join $ (if t then mkLt else mkGe) <$> lincomb i lc <*> (mkInteger v)
+  let respectGuardAt i (t,(lc,v)) = join $ opop M.! t <$> lincomb i lc <*> (mkInteger v)
+      opop = M.fromList [(GuardGt, mkGt), (GuardGe, mkGe), (GuardEq, mkEq), (GuardLe, mkLe), (GuardLt, mkLt)]
 
   --------------------------------------------------------------------------------------------------
   -- always start path at node 0

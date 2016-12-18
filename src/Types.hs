@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
-  Graph, LEdge, EdgeL(..), nodes, edges, hasProp, toEdge, edgeLabel, counters, updates, guards
+  Graph, LEdge, EdgeL(..), GuardOp(..), nodes, edges, hasProp, toEdge, edgeLabel, counters, updates, guards
 ) where
 -- required for formula
 import Data.Maybe (catMaybes)
@@ -75,7 +75,8 @@ isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
 
 -- | edges can be labelled with linear combinations of counters >=(true) / <(false) some value
 --  and an increment for each counter can be provided
-data EdgeL b = GuardGE Bool [(Integer,b)] Integer | UpdateInc b Integer deriving (Show)
+data GuardOp = GuardLt | GuardLe | GuardEq | GuardGe | GuardGt deriving (Show, Eq, Ord)
+data EdgeL b = Guard [(Integer,b)] GuardOp Integer | UpdateInc b Integer deriving (Show)
 
 -- | atomic propositions indexed by a, counters indexed by b, start node always has id 0
 type Graph a b = Gr (Set a) [EdgeL b]
@@ -94,9 +95,9 @@ updates xs = M.fromList $ catMaybes $ map getUpdate xs
 
 -- | filter out the GE guards stored at an edge, repacked in a tuple (neg.,([lin.comb.], const.))
 --   LT guards are GE guards with neg. flag = True
-guards :: [EdgeL b] -> [(Bool, ([(Integer,b)], Integer))]
+guards :: [EdgeL b] -> [(GuardOp, ([(Integer,b)], Integer))]
 guards xs = catMaybes $ map getGuard xs
-  where getGuard (GuardGE neg vs c) = Just (neg, (vs, c))
+  where getGuard (Guard vs op c) = Just (op, (vs, c))
         getGuard _ = Nothing
 
 -- | specialized for reexport
@@ -119,4 +120,4 @@ toEdge = G.toEdge
 counters :: (Ord b) => Graph a b -> [b]
 counters gr = S.toList $ S.fromList $ concatMap (concatMap extract . G.edgeLabel) $ G.labEdges gr
   where extract (UpdateInc b _) = [b]
-        extract (GuardGE _ xs _) = map snd xs
+        extract (Guard xs _ _) = map snd xs

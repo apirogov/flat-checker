@@ -11,7 +11,7 @@ import Solve
 import Util
 
 -- | applicative parser for the args given on the command line
-confFromArgs :: Parser (SolveConf Char String)
+confFromArgs :: Parser (SolveConf String String)
 confFromArgs = SolveConf
   <$> option (eitherReader parseFormula) (long "formula" <> short 'f' <> metavar "FLTL-FORMULA"
     <> help "fLTL-formula to check")
@@ -26,7 +26,7 @@ confFromArgs = SolveConf
   <*> switch (long "verbose" <> short 'v' <> help "Enable verbose server log")
 
 -- | given filename, try to load in one of the supported formats or fail
-readGraph :: String -> IO (Graph Char String)
+readGraph :: String -> IO (Graph String String)
 readGraph filename = do
   filedata <- if null filename --if no graph file given, read from stdin
               then Just <$> getContents

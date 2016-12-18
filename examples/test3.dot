@@ -3,11 +3,11 @@
  ( ((aU[1/101]c)&(bU[100/101]c)) & F((a&Xb)&X((bU[1/101]d)&(cU[100/101]d))) ) with n=18
  */
 digraph G {
-  0 [label="a"];
-  1 [label="b"];
-  2 [label="c"];
-  3 [label="d"];
-  4 [label="e"];
+  0 [props="{a}"];
+  1 [props="{b}"];
+  2 [props="{c}"];
+  3 [props="{d}"];
+  4 [props="{e}"];
   0 -> 0, 1;
   1 -> 1, 2;
   2 -> 2, 3;
