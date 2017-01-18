@@ -48,7 +48,7 @@ mkIntEnumSort is = do
   let cmap = M.fromList $ zip is constrs
   return $ EnumAPI mkFreshIntVar evalEnum (mkEq . (cmap M.!)) mkEq
 
--- | Create an enum where each of n values is encoded in log(n) bits
+-- | create an enum where each of n values is encoded in log(n) bits
 mkBoolEnumSort :: (Ord a) => [a] -> Z3 (EnumAPI a)
 mkBoolEnumSort is = do
   _T <- mkTrue
@@ -72,7 +72,8 @@ mkBoolEnumSort is = do
       eqBE a b = mkAnd =<< mapM (\(c,d) -> mkEq c d) (zip a b)
   return $ EnumAPI mkBE evalBE isBE eqBE
 
--- | sugar, expand quantifiers over variables
+-- | sugar, expand quantifiers over variables where all possible values are
+-- known at compile-time (generates subformula for each valuation).
 mkForallI :: [a] -> (a -> Z3 AST) -> Z3 AST
 mkForallI [] _ = mkTrue
 mkForallI ind f = mkAnd =<< forM ind f
@@ -85,21 +86,28 @@ mkExistsI ind f = mkOr =<< forM ind f
 mkAny :: (a -> b -> Z3 AST) -> [a] -> b -> Z3 AST
 mkAny f ls p = mkOr =<< forM ls (flip f p)
 
--- | if (a>b) then f(a) else f(b) .ite is MUCH faster than using implications here
+-- | if (a>b) then f(a) else f(b). ite is MUCH faster than using implications here
+mkWithMax :: AST -> AST -> (AST -> Z3 AST) -> Z3 AST
 mkWithMax a b f = join $ mkIte <$> mkGt a b <*> f a <*> f b
 
 -- | only enforce f if predicate (known at compile time) is true,
--- otherwise make it trivially true or false. useful to prevent out-of-bounds errors
+-- otherwise make it triv. true or false. useful to prevent out-of-bounds errors
+ifT :: Bool -> Z3 AST -> Z3 AST
 ifT False _ = mkTrue
 ifT True f = f
+
+ifF :: Bool -> Z3 AST -> Z3 AST
 ifF False _ = mkFalse
 ifF True f = f
 
 -- | generate a variable name from prefix and a list of indices
+varname :: (Show i) => String -> [i] -> String
 varname pref ind = intercalate "_" $ pref:(map show ind)
 
 -- | allocate a vector of variable symbols with given prefix, indexed over is
+mkVarVec :: (Show i) => (String -> Z3 a) -> String -> [i] -> Z3 (V.Vector a)
 mkVarVec mkf name is = V.fromList <$> forM is (\i -> mkf $ varname name [i])
--- | allocate a matrix of variable symbols with given prefix, indexed over is and js
-mkVarMat mkf name is js = V.fromList <$> forM is (\i -> mkVarVec mkf (varname name [i]) js)
 
+-- | allocate a matrix of variable symbols with given prefix, indexed over is and js
+mkVarMat :: (Show i, Show j) => (String -> Z3 a) -> String -> [i] -> [j] -> Z3 (V.Vector (V.Vector a))
+mkVarMat mkf name is js = V.fromList <$> forM is (\i -> mkVarVec mkf (varname name [i]) js)

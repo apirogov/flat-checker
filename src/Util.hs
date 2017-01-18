@@ -9,10 +9,13 @@ import qualified Data.Vector as V
 import System.Clock
 
 import Parse
+import Types (Formula, Graph)
 
+eitherToMaybe :: Either b a -> Maybe a
 eitherToMaybe = either (const Nothing) Just
 
 -- | access 2-indexed variable
+at :: V.Vector (V.Vector a) -> Int -> Int -> a
 at var i j = (var V.! i) V.! j
 
 -- | fully connected graph of size n (e.g. to benchmark cycle search)
@@ -40,8 +43,9 @@ bench f = do
 -- unsafe REPL helpers
 
 -- | parse formula. exception on failure, use with care
+formula :: String -> Formula String
 formula = fromJust . eitherToMaybe . parseFormula
 
 -- | parse graph in dot format. exception on failure.
+dotFromFile :: FilePath -> IO (Graph String String)
 dotFromFile f = readFile f >>= return . parseDot'
-

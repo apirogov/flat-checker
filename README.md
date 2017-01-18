@@ -10,6 +10,8 @@ stack install
 
 ## Usage
 
+The program needs at least an input graph, a formula and a schema size:
+
 `fltl-checker -g FILE -f FORMULA -n SIZE`
 
 The file must describe a directed graph with labeled nodes in DOT format (from
@@ -29,3 +31,5 @@ while the parentheses around binary operators are mandatory. `m/n` can represent
 
 A larger path schema size makes the resulting formula larger and the calculation
 slower, but may be necessary to find a run that satisfies the given formula.
+
+See `fltl-checker -h` for a complete list of possible command line arguments.

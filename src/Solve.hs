@@ -64,6 +64,7 @@ data Run = Run
 data LoopType = Out | Start | In | End deriving (Eq, Read, Show, Ord)
 
 -- | abbreviation for often used combination
+(=<<<) :: (Traversable t, Monad m) => (t a -> m b) -> t (m a) -> m b
 f =<<< xs = f =<< sequence xs
 
 -- | input: graph structure and configuration with formula and settings

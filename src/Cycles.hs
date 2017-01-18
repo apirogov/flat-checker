@@ -32,25 +32,30 @@ data Johnson g a b c = Johnson { _js :: Int    -- ^ current start node of explor
                                }
 makeLenses ''Johnson
 
+-- | a function called when a cycle is identified,
+-- getting the cycle and the custom state container of type c
 type ReportFunc c = SQ.Seq Int -> c -> c
 
--- | input: graph (so selfloops or multi-edges), output: list of cycle paths
+-- | input: graph (no selfloops or multi-edges), output: list of cycle paths
 getCycles :: (G.DynGraph g) => g a b -> [[Int]]
 getCycles g = reverse $ getCyclesWith g (\s c -> toList s:c) []
 
--- | input: graph (so selfloops or multi-edges), output: list of cycle lengths
+-- | input: graph (no selfloops or multi-edges), output: list of cycle lengths
 getCycleLens :: (G.DynGraph g) => g a b -> IS.IntSet
 getCycleLens g = getCyclesWith g (\s c -> IS.insert (SQ.length s) c) IS.empty
 
+-- | generic function executing Johnsons algorithm on a graph with a custom reporter function
 getCyclesWith :: (G.DynGraph g) => g a b -> ReportFunc c -> c -> c
 getCyclesWith g f c = _jCycles $ execState (johnsonWith f) (Johnson 0 g V.empty V.empty SQ.empty c)
 
 -- | implementation of Johnson's algorithm for finding simple cycles
 -- f = reporting function that takes the current nodestack (containing the cycle nodes)
 -- and some container and does something with it
+-- see: "Finding all the elementary circuits of a directed graph",
+--      Donald B. Johnson, SIAM J. Comput., Vol. 4, No. 1, March 1975
 johnsonWith :: (G.DynGraph g) => ReportFunc c -> JState g a b c ()
 johnsonWith f = do
-  jG %= \gr -> G.delEdges (map (\i->(i,i)) $ G.nodes gr) gr --remove self-loops
+  jG %= \gr -> G.delEdges (map (\i->(i,i)) $ G.nodes gr) gr -- remove self-loops
   n <- use $ jG . to G.nodes . to length
   jBlocked .= V.replicate n False
   jB .= V.replicate n IS.empty
@@ -60,7 +65,7 @@ johnsonWith f = do
     let sccs = sortOn head $ map sort $ G.scc g
     case sccs of
       (k:_) -> do
-        let s = head k -- scc can not be empty, safe
+        let s = head k -- scc can not be empty -> operation safe
             ak = G.subgraph k g
         js .= s
         jBlocked %= \bl -> bl V.// (zip k $ repeat False)

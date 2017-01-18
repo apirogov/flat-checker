@@ -28,7 +28,7 @@ confFromArgs = SolveConf
 -- | given filename, try to load in one of the supported formats or fail
 readGraph :: String -> IO (Graph String String)
 readGraph filename = do
-  filedata <- if null filename --if no graph file given, read from stdin
+  filedata <- if null filename -- if no graph file given, read from stdin
               then Just <$> getContents
               else do
                 exf <- doesFileExist filename
@@ -49,8 +49,8 @@ main = do
 -- | check some formula on some graph. This can also be used in ghci
 findAndPrint :: (Data a, Ord a, Ord b, Show a, Show b) => SolveConf a b -> Graph a b -> IO ()
 findAndPrint conf g = do
-  hSetBuffering stdout LineBuffering
-  w <- maybe Nothing (Just . width) <$> size
+  hSetBuffering stdout LineBuffering         -- we want to see progress immediately
+  w <- maybe Nothing (Just . width) <$> size -- obtain terminal width for pretty-printing
   r <- findRun conf g
   case r of
     Just run -> putStrLn "Solution:" >> putStrLn (showRun (slvFormula conf) g run w)

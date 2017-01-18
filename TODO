@@ -1,3 +1,0 @@
-think about more general graph guards with and/or/not -> maybe just try Z3 forall quantifier?
-debugging, benchmarking, useful examples, refactoring, documentation, write everything down
-automate exponential doubleing until some upper bound, then binary search to find a minimal run
