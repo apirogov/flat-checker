@@ -21,13 +21,17 @@ provided, the graph is read from standard input.
 The LTL formula has the following grammar:
 
 ```
-  φ ::= 1 | 0 | p | ~φ | (φ & φ) | (φ | φ) | Xφ | Fφ | Gφ | (φ U φ) | (φ U[m/n] φ)
+  φ ::= true | false | p | ~φ | (φ) | (φ & φ) | (φ | φ) | Xφ | F[C]φ | G[C]φ | (φ U[C] φ)
+  C ::= <int> φ <+/-> ... <+/-> <int> φ <Op> <int>
+  Op ::= > | >= | = | <= | <
 ```
 
-`p` stands for an arbitrary lowercase letter representing a proposition, `1` means
-**true**, `0` means **false**. Whitespace is ignored, additional parentheses are not allowed (yet),
-while the parentheses around binary operators are mandatory. `m/n` can represent
-  any fraction of natural numbers with `0 < m/n <= 1`.
+`p` is an atomic proposition represented by a string starting with a lowercase letter.
+Whitespace is ignored, the parentheses around binary operators are mandatory.
+The `[C]` is an optional constraint over a linear combination of formulae, with the
+meaning that occurences of these formulae are counted and weighted by the given
+coefficients within the scope described by the `U`. An `φU[C]ψ` is then only fulfilled,
+if the constraint is satisfied at the `ψ`-position.
 
 A larger path schema size makes the resulting formula larger and the calculation
 slower, but may be necessary to find a run that satisfies the given formula.

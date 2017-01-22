@@ -23,6 +23,7 @@ confFromArgs = SolveConf
     <> help "List of simple loop lengths possible in given graph (on faith!)" <> value [])
   <*> switch (long "use-int-ids" <> short 'i' <> help "Use ints for node ids")
   <*> switch (long "use-bool-lt" <> short 'b' <> help "Use bools for loop types")
+  <*> switch (long "minimal-run" <> short 'm' <> help "Iteratively try to find minimal run")
   <*> switch (long "verbose" <> short 'v' <> help "Enable verbose server log")
 
 -- | given filename, try to load in one of the supported formats or fail

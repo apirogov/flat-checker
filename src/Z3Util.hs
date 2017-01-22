@@ -86,9 +86,9 @@ mkExistsI ind f = mkOr =<< forM ind f
 mkAny :: (a -> b -> Z3 AST) -> [a] -> b -> Z3 AST
 mkAny f ls p = mkOr =<< forM ls (flip f p)
 
--- | if (a>b) then f(a) else f(b). ite is MUCH faster than using implications here
-mkWithMax :: AST -> AST -> (AST -> Z3 AST) -> Z3 AST
-mkWithMax a b f = join $ mkIte <$> mkGt a b <*> f a <*> f b
+-- | if (a ~ b) then f(a) else f(b). ite is MUCH faster than using implications here
+mkWithCmp :: (AST -> AST -> Z3 AST) -> AST -> AST -> (AST -> Z3 AST) -> Z3 AST
+mkWithCmp op a b f = join $ mkIte <$> op a b <*> f a <*> f b
 
 -- | only enforce f if predicate (known at compile time) is true,
 -- otherwise make it triv. true or false. useful to prevent out-of-bounds errors

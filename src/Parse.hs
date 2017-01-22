@@ -3,7 +3,6 @@ module Parse (
 ) where
 
 import Types
-import Data.Ratio ((%))
 import Data.Maybe (catMaybes)
 import qualified Data.Set as S
 import Text.Parsec hiding (State)
@@ -12,7 +11,7 @@ import Text.Parsec.String (Parser)
 import qualified Data.Text.Lazy as TL
 import Data.GraphViz.Types hiding (parse)
 import Data.GraphViz (DotGraph)
-import Data.GraphViz.Attributes.Complete
+import Data.GraphViz.Attributes.Complete hiding (Constraint)
 import Data.GraphViz.Exception
 import Control.Exception hiding (try)
 
@@ -33,7 +32,7 @@ parseFormula str = parse' "Parse error: Failed to parse formula: " (ltlformula <
 spc :: Parser ()
 spc = many (oneOf " \t") *> pure ()
 
--- | reads a token surrounded by whitespace
+-- | reads a token followed by whitespace
 sym :: String -> Parser ()
 sym x = string x *> spc
 
@@ -49,31 +48,40 @@ parseint = (*) <$> option 1 (char '-' *> pure (-1)) <*> parsenat
 prop :: Parser String
 prop = ((:) <$> lower <*> many (char '_' <|> lower <|> digit)) <* spc
 
+-- | mapping of constraint operators to symbols
+opMap = [("=",CEq), ("<=",CLe), (">=",CGe), ("<",CLt), (">",CGt)]
+
+parseConstraint ::  [(String,ConstraintOp)] -> Parser a -> Parser (Constraint a)
+parseConstraint ops p = Constraint <$> lincomb <*> op <*> (fromIntegral <$> parseint)
+  where lincomb = (:) <$>      ((,) <$> (((*) <$> optneg <*> option 1 (fromIntegral <$> parsenat))) <*> p)
+                      <*> many ((,) <$> (((*) <$> sign   <*> option 1 (fromIntegral <$> parsenat))) <*> p)
+        optneg = option 1 (sym "-" *> pure (-1))
+        sign = (sym "+" *> pure 1) <|> (sym "-" *> pure (-1))
+        op = foldl1 (<|>) (map (\(a,b) -> try (string a *> pure b)) ops) <* spc
+
 -- | reads an fLTL formula
 ltlformula :: Parser (Formula String)
 ltlformula = spc *> (ptru <|> pfls <|> pprop <|> pnot <|> pnext <|> pfin <|> pglob <|> pparens) <* spc
-  where ptru = sym "1" *> pure Tru
-        pfls = sym "0" *> pure Fls
+  where ptru = sym "true" *> pure Tru
+        pfls = sym "false" *> pure Fls
         pprop  = Prop <$> prop
         pnot  = Not  <$> (sym "~" *> ltlformula)
         pnext = Next <$> (sym "X" *> ltlformula)
         -- syntactic sugar
-        pfin = Until 1 <$> pure Tru <*> (sym "F" *> ltlformula)
-        pglob = Not <$> (Until 1 <$> pure Tru <*> (Not <$> (sym "G" *> ltlformula)))
+        pfin  = (\c f -> Until c Tru f)             <$> (sym "F" *> parseUConstr) <*> ltlformula
+        pglob = (\c f -> Not (Until c Tru (Not f))) <$> (sym "G" *> parseUConstr) <*> ltlformula
 
         pparens = do --either optional parentheses, or binary operator with mandatory
           left <- sym "(" *> ltlformula
           (sym ")" *> pure left) <|> (binop <*> pure left <*> (ltlformula <* sym ")"))
 
-        parseufrac = do
-          (m,n) <- (,) <$> (sym "[" *> parsenat <* sym "/") <*> (parsenat <* sym "]")
-          if m>n || m<=0 || n<=0
-            then fail $ "Parse error: Invalid fraction at U[..] in formula: " ++ show m ++ "/" ++ show n
-            else return $ m % n
+        -- equality constraints enforce quadratic blowup. we forbid that
+        parseUConstr = option Nothing
+                     $ Just <$> (sym "[" *> parseConstraint (filter ((/="=").fst) opMap) ltlformula <* sym "]")
 
         andop = sym "&" *> pure And
         orop  = sym "|" *> pure Or
-        untilop = Until <$> (sym "U" *> option 1 parseufrac)
+        untilop = Until <$> (sym "U" *> parseUConstr)
         binop = andop <|> orop <|> untilop
 
 -- | parse a node label in the dot digraph. filters out the unique set with props
@@ -82,19 +90,14 @@ parsenodel = nonset *> option S.empty propset <* nonset <* eof
   where propset = S.fromList <$> between (sym "{") (sym "}") (prop `sepBy` sym ",")
         nonset = many (noneOf "{}")
 
+
 -- | parse an edge label in the dot digraph
 parseedgel :: Parser [EdgeL String]
 parseedgel = nonset *> (option [] $ between (sym "{") (sym "}") (edgel `sepBy` sym ",")) <* nonset <* eof
   where nonset = many (noneOf "{}")
-        edgel = try upd <|> grd
+        edgel = try (Right <$> upd) <|> (Left <$> (sym "[" *> (parseConstraint opMap prop `sepBy` sym ",") <* sym "]"))
         updop = (sym "+=" *> pure (*1)) <|> (sym "-=" *> pure (*(-1)))
         upd = UpdateInc <$> prop <*> (updop <*> (fromIntegral <$> parseint))
-        grdop = foldl1 (<|>) (zipWith (\a b -> try (string a *> pure b)) ["=", "<=", ">=", "<", ">"] [GuardEq, GuardLe, GuardGe, GuardLt, GuardGt]) <* spc
-        optneg = option 1 (sym "-" *> pure (-1))
-        sign = (sym "+" *> pure 1) <|> (sym "-" *> pure (-1))
-        lincomb = (:) <$>      ((,) <$> (((*) <$> optneg <*> option 1 (fromIntegral <$> parsenat))) <*> prop)
-                      <*> many ((,) <$> (((*) <$> sign   <*> option 1 (fromIntegral <$> parsenat))) <*> prop)
-        grd = Guard <$> lincomb <*> grdop <*> (fromIntegral <$> parseint)
 
 -- | load a digraph from a dot file. needs IO to catch failure
 parseDot :: String -> IO (Maybe (Graph String String))
@@ -103,7 +106,7 @@ parseDot dgs = catch (Just <$> evaluate g) handleErr
         handleErr _ = return Nothing
         g = parseDot' dgs
 
--- | load a digraph from a dot file. unfortunately an exception can be thrown
+-- | load a digraph from a dot file. unfortunately an exception can be thrown by the GraphViz API.
 --  edge guards and updates are read from the label attribute with a string like
 --  "whatever {GUARDS, UPDATES} whatever"
 --  node propositions are either read from the label attribute "whatever {PROPS} whatever"

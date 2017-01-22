@@ -4,10 +4,9 @@ module Solve (
 import Data.Data
 import Prelude hiding (log)
 import Data.Bool
-import Data.Ratio
 import Data.Maybe
 import Data.Char (isAlphaNum)
-import Data.List (intercalate, transpose, sortOn)
+import Data.List (intercalate, transpose, sortOn, sort, groupBy)
 import qualified Data.Map as M
 import Data.Vector (Vector)
 import qualified Data.Vector as V
@@ -33,11 +32,12 @@ data SolveConf a b = SolveConf
   , slvLoopLens   :: [Int]        -- ^ all simple loop lengths in graph (if empty, will be calculated)
   , slvUseIntIds  :: Bool         -- ^ use ints for node ids instead of enum
   , slvUseBoolLT  :: Bool         -- ^ use pairs of bools for loop type instead of enum
+  , slvMinimal    :: Bool         -- ^ find minimal run up to given schema size
   , slvVerbose    :: Bool         -- ^ show additional information
   }
 -- | default configuration for the checker
 defaultSolveConf :: Formula a -> Int -> SolveConf a b
-defaultSolveConf f n = SolveConf f n "" [] False False False
+defaultSolveConf f n = SolveConf f n "" [] False False False False
 
 data PosVars = PosVars
   { posId     :: Int              -- ^ node id at current position (first node: 0)
@@ -69,11 +69,12 @@ f =<<< xs = f =<< sequence xs
 
 -- | input: graph structure and configuration with formula and settings
 --   output: valid run if possible
-findRun :: (Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
-findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
-  when (n<=0) $ error "path schema must have positive size!"
+findRun :: (Show a, Show b, Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
+findRun conf gr = do
+  let n = slvSchemaSize conf
+  when (n <= 0) $ error "path schema must have positive size!"
 
-  lens <- case ml of
+  lens <- case slvLoopLens conf of
     [] -> do
       -- calculate valid loop lens with Johnsons algorithm in (v+e)(c+1)
       -- selfloops must be unrolled to loops of size 2 -> we must always allow 2.
@@ -89,7 +90,43 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
     -- but may be a good idea for small, but REALLY dense graphs (provide [1..n])
     ls -> log ("Using provided simple cycle lengths: "++show ls) >> return (2:ls)
 
-  --------------------------------------------------------------------------------------------------
+  let gr'   = splitDisjunctionGuards gr
+      conf' = conf{slvLoopLens=lens, slvMinimal=False}
+      findRunFix c = findRun' conf'{slvSchemaSize=c} gr'
+      ns = (takeWhile (<n) $ iterate (*2) 2) ++ [n]
+      ivs :: [(Int,Int)]
+      ivs = zip ns (tail ns)
+
+  log $ show gr'
+  if not $ slvMinimal conf then findRun' conf' gr' -- fixed schema size -> just do it
+  else do
+    -- find interval to do binary search in (exponential doubling up to n)
+    initrun <- foldM (\lastres (l,r) -> case lastres of
+                          Nothing -> do
+                            res <- findRunFix r
+                            case res of
+                              Nothing -> return Nothing
+                              -- found run -> keep that interval
+                              Just run -> return $ Just (run, (l,r))
+                          Just _ -> return lastres) Nothing ivs
+    case initrun of
+      Nothing -> return $ Nothing -- no solution found with given max. schema size
+      Just (frun, (l,r)) -> do     -- perform binary search to find minimal result
+        let binsearch a b run
+              | a+1>=b = return run
+              | otherwise = do
+                  let m = (1+a+b) `div` 2
+                  log $ "Minimal run is between " ++ show a ++ " and " ++ show b ++ ", trying " ++ show m
+                  res <- findRunFix m
+                  case res of
+                    Nothing   -> binsearch m b run   -- try bigger
+                    Just run' -> binsearch a m run'  -- try smaller
+        Just <$> binsearch l r frun
+  where log = when (slvVerbose conf) . liftIO . putStrLn
+
+-- | find run of fixed schema size for a already preprocessed graph
+findRun' :: (Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
+findRun' (SolveConf f n _ lens useIntIds useBoolLT _ verbose) gr = evalZ3 $ do
   log "Building constraints..."
   start1 <- currTime
 
@@ -134,19 +171,18 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   -- variable sets to store labels (list of lists, each node has vars with flags of all subf)
   labels <- mkVarMat mkFreshBoolVar "lbl" indices [1..length sfs]
 
-  -- to correctly label the rational untils, we need to employ the counters
-  -- each state of the path has an own counter per ratio-U subformula which is firstly updated there
-  -- there are 2 guards per counter: <0, >=0. both can be on the incoming edge of a node
+  -- to correctly label the constraint untils, we need to employ the counters
+  -- each state of the path has a value for each counter of the constraint-U subformulas
   let untils = getEvilUntils sfs
   let numUntils = length untils
   let uindices = [1..numUntils]
-  -- vars per state and U-formula: X[i][j] i=current schema state, j=number U-formula counter
+  -- vars per state and U-formula: X[i][j] i=current schema state, j=index of U-formula counter
   -- intermediate counter values (total effect)
   udctrs    <- mkVarMat mkFreshIntVar "ud" indices uindices
   -- intermediate counter values (in loops for first iteration)
   uwctrs    <- mkVarMat mkFreshIntVar "uw" indices uindices
-  -- maximum of all future countervalues encountered at psis of U-formula j
-  ucsufmax <- mkVarMat mkFreshIntVar "usm" indices uindices
+  -- best of all future countervalues encountered at psis of U-formula j
+  ucsufbest <- mkVarMat mkFreshIntVar "usm" indices uindices
 
   -- loop delta of last loop for each U[r] -> total is in [n-1][j]
   let maxllen = min n (maximum lens) -- maximum allowed loop len (simple loops in graph)
@@ -162,8 +198,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
   -- linear combination of variables at position i
   let lincomb i lc = mkAdd =<< mapM (\(c,var) -> mkMul =<<< [mkInteger c, pure $ at gctrs i $ ctr2num M.! var]) lc
   -- constraint that the variables at position i should respect the given guard
-  let respectGuardAt i (t,(lc,v)) = join $ opop M.! t <$> lincomb i lc <*> (mkInteger v)
-      opop = M.fromList [(GuardGt, mkGt), (GuardGe, mkGe), (GuardEq, mkEq), (GuardLe, mkLe), (GuardLt, mkLt)]
+  let opop o = M.fromList [(CGt, mkGt), (CGe, mkGe), (CEq, mkEq), (CLe, mkLe), (CLt, mkLt)] M.! o
+  let respectGuardAt i (t,(lc,v)) = join $ opop t <$> lincomb i lc <*> (mkInteger v)
 
   --------------------------------------------------------------------------------------------------
   -- always start path at node 0
@@ -189,10 +225,10 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
 
   -- helper: f shall hold with one of the valid loop lengths
   let withLoopLen i prop = mkExistsI lens (\l -> mkAnd =<<< [join $ mkEq (llen V.! i) <$> (mkInteger $ fromIntegral l), prop l])
-  -- helper: a + C = b, C const
-  let isInc c a b = join $ mkEq b <$> (mkAdd =<<< [mkInteger c, pure a])
-  -- helper: a + x*C = b, C const
-  let isIncMul c x a b = join $ mkEq b <$> (mkAdd =<<< [pure a,  mkMul =<<< [mkInteger c, pure x]])
+  -- helper: a + C = b
+  let isInc c a b = join $ mkEq b <$> (mkAdd =<<< [c, pure a])
+  -- helper: a + x*C = b
+  let isIncMul c x a b = join $ mkEq b <$> (mkAdd =<<< [pure a,  mkMul =<<< [c, pure x]])
   -- helper: forall j. mat[i][j] = mat[i2][j]
   let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
 
@@ -234,7 +270,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
     -- loop length counter init at loop start
     , join $ mkImplies <$> isLtype Start (lt V.! i) <*> mkEq (lctr V.! i) _1
     -- loop length counter propagate
-    , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> (isInc 1 (lctr V.! (i-1)) (lctr V.! i))
+    , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> (isInc (mkInteger 1) (lctr V.! (i-1)) (lctr V.! i))
 
     -- loop length outside of loops is zero
     , join $ mkImplies <$> isLtype Out (lt V.! i) <*> mkEq (llen V.! i) _0
@@ -271,36 +307,34 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
         ])))
 
     -- enforce correct graph counter updates and guards
-    , ifT (i>0) $ mkForallI ge (\(a,b,l) -> do
+    , let sameNodes (a,b,_) (d,e,_) = a==d && b==e in
+      ifT (i>0) $ mkForallI (map (\x@((a,b,_):_) -> (a,b,map edgeLabel x) ) $ groupBy sameNodes $ sort ge) (\(a,b,ls) -> do
+      mkExistsI ls $ \l -> do
         let (upd, grd) = (updates l, guards l)
         join $ mkImplies <$> isEdge (a,b) (ids V.! (i-1), ids V.! i) <*> mkAnd =<<<
           [ -- update graph counters corresponding to edge labelling
             mkForallI ctrs (\ctr ->
               let (j, u) = (ctr2num M.! ctr, fromMaybe 0 $ M.lookup ctr upd)
-              in isIncMul u (lcnt V.! (i-1)) (at gctrs (i-1) j) (at gctrs i j) )
+              in isIncMul (mkInteger u) (lcnt V.! (i-1)) (at gctrs (i-1) j) (at gctrs i j) )
             -- guards are respected outside loops. as each loop is unrolled in
             -- both directions and a loop has a constant delta, this is sufficient
           , join $ mkImplies <$> (isLtype Out (lt V.! (i-1))) <*> mkForallI grd (respectGuardAt i)
           ])
 
     -- enforce correct until counter updates
-    , mkForallI (M.toList untils) (\((Until r a _), j) -> do
-      let phi    = sfs M.! a
-          (x, y) = (numerator r, denominator r)
-          -- let r=x/y is the ratio at U[r]). do something with...
-          withUpdateAt k prop = join $ mkIte (at labels k phi) <$> prop (fromIntegral (y-x)) -- positive update if phi holds: y-x
-                                                               <*> prop (fromIntegral (-x) ) -- and negative if it does not:  -x
+    , mkForallI (M.toList untils) (\((Until (Just (Constraint xs _ _)) _ _), j) -> do
+          -- for each formula in constraint, add its weight if it holds or do nothing
+      let calcUpdate k = mkAdd =<< mapM (\(v,w) -> join $ mkIte (at labels k (sfs M.! w)) <$> mkInteger v <*> pure _0) xs
       mkAnd =<<<
           -- counter value at i>0 = old value at i-1 + update on edge from i-1 times the number of visits of i-1
           -- (proportional to number of node visits, semantically invalid inside loops, just used as accumulator there)
           -- notice: counter value in last loop does not change (lcnt==0!) but it does not matter, see at loop delta to decide whether its a good loop
-        [ ifT (i>0) $ withUpdateAt (i-1) $ \u ->
-            isIncMul u (lcnt V.! (i-1)) (at udctrs (i-1) j) (at udctrs i j)
+        [ ifT (i>0) $ isIncMul (calcUpdate $ i-1) (lcnt V.! (i-1)) (at udctrs (i-1) j) (at udctrs i j)
           -- counter update for witness counters. count updates just once, but synchronize after loops with delta counters
-        , ifT (i>0) $ withUpdateAt (i-1) $ \u -> join $
+        , ifT (i>0) $ join $
             mkIte <$> (isLtype End (lt V.! (i-1)))
                   <*> (mkEq (at udctrs i j) (at uwctrs i j))
-                  <*> (isInc u (at uwctrs (i-1) j) (at uwctrs i j))
+                  <*> (isInc (calcUpdate $ i-1) (at uwctrs (i-1) j) (at uwctrs i j))
 
 
           -- accumulate loop deltas for last loop (we have only maxllen positions, at right of the schema)
@@ -309,8 +343,8 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
           [ join $ mkImplies <$> isLtype Out (lt V.! i') <*> mkEq (at ldeltas i j) _0 -- outside of loop -> 0
           , join $ mkImplies <$> (mkEq (lcnt V.! i') _0) <*> (mkAnd =<<<              -- in last loop:
             -- propagate and add as usual to the right
-            [ join $ mkImplies <$> isLtype Start (lt V.! i') <*> withUpdateAt i' (\u -> join $ mkEq (at ldeltas i j) <$> (mkInteger u))
-            , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i')) <*> withUpdateAt i' (\u -> isInc u (at ldeltas (i-1) j) (at ldeltas i j)) ])
+            [ join $ mkImplies <$> isLtype Start (lt V.! i') <*> (join $ mkEq (at ldeltas i j) <$> (calcUpdate i'))
+            , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i')) <*> (isInc (calcUpdate i') (at ldeltas (i-1) j) (at ldeltas i j)) ])
           ]
         ]
       )
@@ -338,13 +372,13 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
             ]
 
           -- need to consider subformulas in until separately.. get their subformula index and set constraints
-          Until 1 a b -> do -- this is the regular until
+          Until Nothing a b -> do -- this is the regular until
             let (phi, psi) = (sfs M.! a, sfs M.! b)
-            -- psi holds at some time in the future and for all positions until then phi holds.
+            -- ψ holds at some time in the future and for all positions until then φ holds.
             lbl_ij_equiv_to $ mkOr =<<<
-                -- psi holds -> until holds here
+                -- ψ holds -> until holds here
               [ pure $ lbl i psi
-                -- phi holds -> until works here if it holds in next position too
+                -- φ holds -> until works here if it holds in next position too
               , ifF (i<n-1) $ mkAnd =<<< [pure $ lbl i phi, pure $ lbl (i+1) j]
                 -- if we are at the last position, check the unrolled copy at the left and ensure that there really is a psi
               , ifF (i==n-1) $ mkAnd =<<<
@@ -353,34 +387,53 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
                   ]
               ]
 
-          u@(Until _ _ b) -> do -- this is the frequency until
-            let psi = sfs M.! b
-                k   = untils M.! u -- get index of this evil until in evil until list
-            -- implementation of the witness condition outside of loops. U[r]_j holds here if:
-            join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> lbl_ij_equiv_to (mkOr =<<<
-              [ pure $ lbl i psi   -- psi holds ...
-              , mkAnd =<<< [ pure $ lhaspsi V.! k, mkGt (at ldeltas (maxllen-1) k) _0 ] -- or last loop is good and has psi ...
-                -- or there is a pos. k>i where psi holds guarded with at least >= current phi counter for U[r]_j
-              , mkGe (at ucsufmax i k) (at uwctrs i k)
+          u@(Until (Just (Constraint _ op c)) a b) -> do -- this is the linear constraint until
+            let reg = sfs M.! (Until Nothing a b) -- get id of normal Until of this kind (we always have both!)
+                phi = sfs M.! a
+                psi = sfs M.! b
+                k   = untils M.! u                -- get index of this evil until in evil until list
+            -- φU[c]ψ <-> φUψ ∧ [c] holds. we check this outside loops, loops copy their unrollings
+            join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> lbl_ij_equiv_to (mkAnd =<<<
+              [ pure $ lbl i reg   -- φUψ holds, and ...
+              , let satisfiesConstraint var = (opop op) var =<< mkAdd =<<< [mkInteger c, pure $ at uwctrs i k]
+                in  mkOr =<<<
+                        -- when ψ holds, we can check constraint directly, or...
+                      [               mkAnd =<<< [pure $ lbl i psi, satisfiesConstraint (at uwctrs i k)       ]
+                        -- φ holds and there is a pos. k>i where ψ holds fulfilling [c] (which backpropagated it's reached value)
+                      , ifF (i<n-1) $ mkAnd =<<< [pure $ lbl i phi, satisfiesConstraint (at ucsufbest (i+1) k)]
+                      ]
               ])
       )
     ])
 
-  assert =<< mkForallI (M.toList untils) (\((Until r _ b), j) -> do
-    let (psi,x) = (sfs M.! b, numerator r)
+  assert =<< mkForallI (M.toList untils) (\((Until (Just (Constraint xs op _)) a b), j) -> do
+    let (phi, psi) = (sfs M.! a, sfs M.! b)
+        coefsum = abs $ sum $ map fst xs
+        -- the invalid base value to start with for the given constraint
+        invalid = if op==CGt || op==CGe then -coefsum else if op==CLt || op==CLe then coefsum
+                  else error "ERROR: equality constraint in formula!"
+        -- worst possible value that can be reached (semantically a bottom)
+        bottom = mkMul =<<< [pure $ steps V.! (n-1), mkInteger invalid]
+        -- depending on the constraints, we want a maximal or minimal witness
+        keepBetterFor x | x==CGt || x==CGe = mkWithCmp mkGt --if a>b, take a, else b
+                        | x==CLt || x==CLe = mkWithCmp mkLt --if a<b, take a, else b
+                        | otherwise = error "ERROR: Equality constraints in formulae are forbidden!"
+
     mkAnd =<<<
         -- lhaspsi_j <-> there is a psi in the last loop for U[r]_j
       [ join $ mkIff (lhaspsi V.! j) <$> (mkExistsI [n-maxllen..n-1] (\i ->
           mkAnd =<<< [pure $ at labels i psi, mkEq (lcnt V.! i) _0]))
 
-         -- calculate counter suffix max: start out with worst possible value for maximum (semantically -inf)
-         , join $ mkEq (at ucsufmax (n-1) j)
-             <$> (mkAdd =<<< [mkInteger (-1), mkMul =<<< [pure $ steps V.! (n-1), mkInteger $ fromIntegral (-x)]])
+        -- calculate counter suffix max/min: start with bottom, if not psi, else current value ...
+        , join $ mkIte (at labels (n-1) psi) <$> (mkEq (at ucsufbest (n-1) j) (at uwctrs (n-1) j))
+                                             <*> (mkEq (at ucsufbest (n-1) j) =<< bottom)
 
-         -- then, at psi positions take maximum of current and future, otherwise just push through
-         , mkForallI (init indices) (\i -> join $
-             mkIte (at labels i psi) <$> (mkWithMax (at ucsufmax (i+1) j) (at uwctrs i j)) (mkEq (at ucsufmax i j))
-                                     <*> (mkEq (at ucsufmax i j) (at ucsufmax (i+1) j)))
+        -- then, at psi positions take best of current and future, otherwise just push through, reset when chain broken
+        , mkForallI (init indices) (\i -> join $
+            mkIte <$> (ifF (i>0) $ pure $ at labels (i-1) phi)
+              <*> (join $ mkIte (at labels i psi) <$> ((keepBetterFor op) (at ucsufbest (i+1) j) (at uwctrs i j)) (mkEq (at ucsufbest i j))
+                                                  <*> (mkEq (at ucsufbest i j) (at ucsufbest (i+1) j)))
+              <*> (mkEq (at ucsufbest i j) =<< bottom))
       ])
 
   -------------------------------------------------------------------------------------------------------------------------------
@@ -414,7 +467,7 @@ findRun (SolveConf f n _ ml useIntIds useBoolLT verbose) gr = evalZ3 $ do
 
     udvals <- getMat evalInt udctrs
     uwvals <- getMat evalInt uwctrs
-    usvals <- getMat evalInt ucsufmax
+    usvals <- getMat evalInt ucsufbest
 
     lblvals <- getMat evalBool labels
 

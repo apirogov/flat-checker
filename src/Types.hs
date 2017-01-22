@@ -1,11 +1,11 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
-  Graph, LEdge, EdgeL(..), GuardOp(..), nodes, edges, hasProp, toEdge, edgeLabel, counters, updates, guards
+  Graph, LEdge, EdgeL, ConstraintOp(..), Constraint(..), Update(..),
+  nodes, edges, hasProp, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
 ) where
 -- required for formula
 import Data.Maybe (catMaybes)
-import Data.Ratio
 import Data.Map (Map)
 import Data.List (sortOn)
 import qualified Data.Map as M
@@ -22,9 +22,24 @@ import Data.Set (Set)
 import qualified Data.Graph.Inductive as G
 import Data.Graph.Inductive (Gr, LEdge)
 
--- | AST of an fLTL formula. Until ratios allowed: 0 < r <= 1
-data Formula a = Tru | Fls | Prop a | And (Formula a) (Formula a) | Or (Formula a) (Formula a)
-               | Not (Formula a) | Next (Formula a) | Until (Ratio Int) (Formula a) (Formula a)
+data ConstraintOp = CLt | CLe | CEq | CGe | CGt deriving (Eq, Ord, Data)
+
+instance Show ConstraintOp where
+  show x | x==CLt = " < " | x==CLe = " <= " | x==CEq = " = " | x==CGe = " >= " | x==CGt = " > " | otherwise = ""
+
+data Constraint a = Constraint [(Integer,a)] ConstraintOp Integer deriving (Eq, Ord, Data)
+
+instance Show a => Show (Constraint a) where
+  show (Constraint xs op c) = lincomb ++ show op ++ show c
+    where lincomb = dropWhile (=='+') $ concatMap (\(a,v) -> showNum a ++ show v) xs
+          showNum x | x < 0 = show x | otherwise = '+':show x
+
+
+-- | AST of an fcLTL formula. Until has an optional constraint [Σ a_i·φ_i OP c]
+data Formula a = Tru | Fls | Prop a
+               | And (Formula a) (Formula a) | Or (Formula a) (Formula a)
+               | Not (Formula a) | Next (Formula a)
+               | Until (Maybe (Constraint (Formula a))) (Formula a) (Formula a)
                deriving (Eq,Ord,Data)
 
 instance Data a => Plated (Formula a)
@@ -32,20 +47,21 @@ makePrisms ''Formula
 
 -- custom Show instance for prettyprinting. same format is accepted by parseFormula
 instance Show a => Show (Formula a) where
-  show Tru = "1"
-  show Fls = "0"
+  show Tru = "true"
+  show Fls = "false"
   show (Prop p) = if c == '\'' || c=='\"' then init $ tail $ show p else show p
     where c = head (show p)
-  show (Not (Until r Tru (Not g))) = "G"++showRat r++show g
+  show (Not (Until c Tru (Not g))) = "G"++maybeShowConstraint c++show g
   show (Not f) = "~"++show f
   show (Next f) = "X"++show f
   show (And f g) = "("++show f ++ "&" ++ show g++")"
   show (Or f g) = "("++show f ++ "|" ++ show g++")"
-  show (Until r Tru g) = "F"++showRat r++show g
-  show (Until r f g) = "("++show f++"U"++showRat r++show g++")"
+  show (Until c Tru g) = "F"++maybeShowConstraint c++show g
+  show (Until c f g) = "("++show f++"U"++maybeShowConstraint c++show g++")"
 
-showRat :: Ratio Int -> [Char]
-showRat r = if r<1 then "["++show (numerator r)++"/"++show (denominator r)++"]" else ""
+maybeShowConstraint :: Show a => Maybe (Constraint a) -> String
+maybeShowConstraint Nothing = ""
+maybeShowConstraint (Just c) = "[" ++ show c ++ "]"
 
 type CollectState a = State (Int, Map (Formula a) Int) ()
 addFormula :: Ord a => Formula a -> CollectState a
@@ -56,13 +72,16 @@ addFormula f = modify addIfNew
 -- | post-order traversal collecting all subformulas
 enumerateSubformulas :: (Ord a,Data a) => Formula a -> Map (Formula a) Int
 enumerateSubformulas = snd . (flip execState (0,M.empty)) . go
-  where go f = traverseOf_ plate go f *> addFormula f
+  where go f@(Until (Just _) g h) = traverseOf_ plate go f
+        -- to label constraint until correctly, we also need the normal one!
+                                  *> addFormula (Until Nothing g h) *> addFormula f
+        go f                      = traverseOf_ plate go f *> addFormula f
 
 -- | filter out the U-subformulas only
 getEvilUntils :: (Ord a) => Map (Formula a) Int -> Map (Formula a) Int
 getEvilUntils = M.fromList . flip zip [0..] . filter evil . filter (has _Until)
               . map fst . sortOn snd . M.toList
-  where evil (Until 1 _ _) = False
+  where evil (Until Nothing _ _) = False
         evil _ = True
 
 -- | given all existing subformulas and a formula, tell its direct deps
@@ -73,12 +92,14 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 isLocal :: Data a => Formula a -> Bool
 isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
 
+data Update b = UpdateInc b Integer deriving (Show, Eq, Ord)
+
 -- | edges can be labelled with linear combinations of counters >=(true) / <(false) some value
 --  and an increment for each counter can be provided
-data GuardOp = GuardLt | GuardLe | GuardEq | GuardGe | GuardGt deriving (Show, Eq, Ord)
-data EdgeL b = Guard [(Integer,b)] GuardOp Integer | UpdateInc b Integer deriving (Show)
+type EdgeL b = Either [Constraint b] (Update b)
 
 -- | atomic propositions indexed by a, counters indexed by b, start node always has id 0
+-- constraint guards are in DNF, each inner list is a monome
 type Graph a b = Gr (Set a) [EdgeL b]
 
 -- | has node n of graph gr the atomic proposition p?
@@ -90,15 +111,14 @@ hasProp gr p n = case G.lab gr n of
 -- | filter out the updates stored at an edge
 updates :: (Ord b) => [EdgeL b] -> Map b Integer
 updates xs = M.fromList $ catMaybes $ map getUpdate xs
-  where getUpdate (UpdateInc b i) = Just (b,i)
+  where getUpdate (Right (UpdateInc b i)) = Just (b,i)
         getUpdate _ = Nothing
 
--- | filter out the GE guards stored at an edge, repacked in a tuple (neg.,([lin.comb.], const.))
---   LT guards are GE guards with neg. flag = True
-guards :: [EdgeL b] -> [(GuardOp, ([(Integer,b)], Integer))]
-guards xs = catMaybes $ map getGuard xs
-  where getGuard (Guard vs op c) = Just (op, (vs, c))
-        getGuard _ = Nothing
+-- | filter out the guards stored at an edge, repacked in a tuple
+guards :: [EdgeL b] -> [(ConstraintOp, ([(Integer,b)], Integer))]
+guards xs = catMaybes $ concatMap getGuard xs
+  where getGuard (Left (Constraint vs op c : cs)) = Just (op, (vs, c)) : getGuard (Left cs)
+        getGuard _ = [Nothing]
 
 -- | specialized for reexport
 nodes :: Graph a b -> [Int]
@@ -119,5 +139,23 @@ toEdge = G.toEdge
 -- | return a list of all counters used in given graph
 counters :: (Ord b) => Graph a b -> [b]
 counters gr = S.toList $ S.fromList $ concatMap (concatMap extract . G.edgeLabel) $ G.labEdges gr
-  where extract (UpdateInc b _) = [b]
-        extract (Guard xs _ _) = map snd xs
+  where extract (Right (UpdateInc b _)) = [b]
+        extract (Left (Constraint xs _ _:cs)) = map snd xs ++ extract (Left cs)
+        extract (Left []) = []
+
+-- | convert edges with multiple sets of guards (disjunction) to single edges (results in multigraph!)
+splitDisjunctionGuards :: Graph a b -> Graph a b
+splitDisjunctionGuards g = G.mkGraph (G.labNodes g) es'
+  where es = edges g
+        es' = concatMap split es
+
+-- | clone edges for each case of disjunction, keep same updates
+split :: LEdge [EdgeL b] -> [LEdge [EdgeL b]]
+split e@(a,b,l) = if null grds then [e] else map (\grd -> (a, b, map Right upd ++ [Left grd])) grds
+  where (grds, upd) = separate l
+
+-- | separate guard monomes and updates
+separate :: [EdgeL b] -> ([[Constraint b]], [Update b])
+separate = foldl getGuard ([],[])
+  where getGuard (g,u) (Left x)  = (x:g, u)
+        getGuard (g,u) (Right x) = (g, x:u)
