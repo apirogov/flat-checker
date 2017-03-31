@@ -1,16 +1,16 @@
 /* test case for normal until with the hole in the loop */
 digraph G {
-  0 [props="{p,a}"];
+  0 [props="p,a"];
 
-  1 [props="{p}"];
-  2 [props="{q}"];
+  1 [props="p"];
+  2 [props="q"];
   3
-  4 [props="{p}"];
+  4 [props="p"];
 
-  5 [props="{a}"];
-  6 [props="{a}"];
-  7 [props="{a}"];
-  8 [props="{a}"];
+  5 [props="a"];
+  6 [props="a"];
+  7 [props="a"];
+  8 [props="a"];
 
   0 -> 1 -> 2 -> 3 -> 4 -> 1;
   0 -> 5 -> 6 -> 7 -> 8 -> 5;

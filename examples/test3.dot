@@ -3,11 +3,11 @@
  ((F[-true+101a>=0]c&F[-100true+101b>=0]c) &(F(a&Xb)&X(F[-true+101b>=0]d&F[-100true+101c>=0]d)))
  */
 digraph G {
-  0 [props="{a}"];
-  1 [props="{b}"];
-  2 [props="{c}"];
-  3 [props="{d}"];
-  4 [props="{e}"];
+  0 [props="a"];
+  1 [props="b"];
+  2 [props="c"];
+  3 [props="d"];
+  4 [props="e"];
   0 -> 0, 1;
   1 -> 1, 2;
   2 -> 2, 3;

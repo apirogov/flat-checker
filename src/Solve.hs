@@ -32,12 +32,14 @@ data SolveConf a b = SolveConf
   , slvLoopLens   :: [Int]        -- ^ all simple loop lengths in graph (if empty, will be calculated)
   , slvUseIntIds  :: Bool         -- ^ use ints for node ids instead of enum
   , slvUseBoolLT  :: Bool         -- ^ use pairs of bools for loop type instead of enum
+  , slvSearch     :: Bool         -- ^ search for run up to given schema size
   , slvMinimal    :: Bool         -- ^ find minimal run up to given schema size
   , slvVerbose    :: Bool         -- ^ show additional information
+  , slvDebug      :: Bool         -- ^ show debugging information
   }
 -- | default configuration for the checker
 defaultSolveConf :: Formula a -> Int -> SolveConf a b
-defaultSolveConf f n = SolveConf f n "" [] False False False False
+defaultSolveConf f n = SolveConf f n "" [] False False False False False False
 
 data PosVars = PosVars
   { posId     :: Int              -- ^ node id at current position (first node: 0)
@@ -88,45 +90,50 @@ findRun conf gr = do
     -- if the provided lengths are incomplete, probably a solution will not be found!
     -- if a superset is provided, the formula will be bigger than neccessary,
     -- but may be a good idea for small, but REALLY dense graphs (provide [1..n])
-    ls -> log ("Using provided simple cycle lengths: "++show ls) >> return (2:ls)
+    ls -> do
+      let lens = IS.elems $ IS.insert 2 $ IS.fromList ls
+      log $ "Using provided simple cycle lengths: " ++ show lens
+      return lens
 
   let gr'   = splitDisjunctionGuards gr
       conf' = conf{slvLoopLens=lens, slvMinimal=False}
       findRunFix c = findRun' conf'{slvSchemaSize=c} gr'
       ns = (takeWhile (<n) $ iterate (*2) 2) ++ [n]
-      ivs :: [(Int,Int)]
-      ivs = zip ns (tail ns)
+      expsearch = foldM (\lastres (l,r) -> case lastres of
+                            Nothing -> do
+                              log $ "Trying schema size " ++ show r
+                              res <- findRunFix r
+                              case res of
+                                Nothing -> return Nothing
+                                -- found run -> keep that interval
+                                Just run -> return $ Just (run, (l,r))
+                            Just _ -> return lastres) Nothing $ zip ns (tail ns)
+      binsearch (run, (a,b))
+        | a+1>=b = return run
+        | otherwise = do
+            let m = (1+a+b) `div` 2
+            log $ "Minimal run is between " ++ show a ++ " and " ++ show b ++ ", trying " ++ show m
+            res <- findRunFix m
+            case res of
+              Nothing   -> binsearch (run , (m,b))  -- try bigger
+              Just run' -> binsearch (run', (a,m))  -- try smaller
 
-  log $ show gr'
-  if not $ slvMinimal conf then findRun' conf' gr' -- fixed schema size -> just do it
+  debug $ show gr'
+  -- fixed schema size -> just do it
+  if not $ slvMinimal conf || slvSearch conf then findRun' conf' gr'
   else do
-    -- find interval to do binary search in (exponential doubling up to n)
-    initrun <- foldM (\lastres (l,r) -> case lastres of
-                          Nothing -> do
-                            res <- findRunFix r
-                            case res of
-                              Nothing -> return Nothing
-                              -- found run -> keep that interval
-                              Just run -> return $ Just (run, (l,r))
-                          Just _ -> return lastres) Nothing ivs
-    case initrun of
-      Nothing -> return $ Nothing -- no solution found with given max. schema size
-      Just (frun, (l,r)) -> do     -- perform binary search to find minimal result
-        let binsearch a b run
-              | a+1>=b = return run
-              | otherwise = do
-                  let m = (1+a+b) `div` 2
-                  log $ "Minimal run is between " ++ show a ++ " and " ++ show b ++ ", trying " ++ show m
-                  res <- findRunFix m
-                  case res of
-                    Nothing   -> binsearch m b run   -- try bigger
-                    Just run' -> binsearch a m run'  -- try smaller
-        Just <$> binsearch l r frun
+    -- find interval via exponential doubling up to n
+    initrun <- expsearch
+    -- perform binary search to find minimal result
+    if slvMinimal conf
+      then sequence $ binsearch <$> initrun
+      else return $ fst <$> initrun
   where log = when (slvVerbose conf) . liftIO . putStrLn
+        debug = when (slvDebug conf) . liftIO . putStrLn
 
 -- | find run of fixed schema size for a already preprocessed graph
 findRun' :: (Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
-findRun' (SolveConf f n _ lens useIntIds useBoolLT _ verbose) gr = evalZ3 $ do
+findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ do
   log "Building constraints..."
   start1 <- currTime
 
@@ -441,12 +448,11 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ verbose) gr = evalZ3 $ do
   end1 <- currTime
   log $ "Build constraints: " ++ showTime start1 end1
   st <- if verbose then T.pack <$> solverToString else pure T.empty --slow, do only in verbose mode for infos
-  let countInts = length $ T.breakOnAll (T.pack "Int") st
-  let countBools = length $ T.breakOnAll (T.pack "Bool") st
-  let countNids = bool ((subtract 1) . length $ T.breakOnAll (T.pack "Nid_T") st) 0 useIntIds
-  let countLTs = bool ((subtract 1) . length $ T.breakOnAll (T.pack "Lt_T") st) 0 useBoolLT
-  log $ "Formula size: " ++ show (T.length st) ++ " Ints: " ++ show countInts ++ " Bools: " ++ show countBools
-                         ++ " Nids: " ++ show countNids ++ " LTs: " ++ show countLTs
+  let countDecl tname = if take 2 (reverse tname) == "T_" then max 0 (cnt-1) else cnt
+        where cnt = fromIntegral $ length $ T.breakOnAll (T.pack tname) st :: Integer
+  let tinfo tname = tname ++ ": " ++ show (countDecl tname) ++ " "
+  let tnames = ["Int","Bool","Nid_T","Lt_T"]
+  log $ "Formula size: " ++ show (T.length st) ++ " " ++ concat (tinfo <$> tnames)
 
   start2 <- currTime
   log "Searching..."

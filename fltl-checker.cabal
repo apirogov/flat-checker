@@ -41,6 +41,9 @@ executable fltl-checker
                      , directory
                      , optparse-applicative
                      , terminal-size
+                     , time
+                     , template-haskell
+                     , gitrev
   default-language:    Haskell2010
 
 test-suite fltl-checker-test

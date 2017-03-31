@@ -4,6 +4,7 @@ module Parse (
 
 import Types
 import Data.Maybe (catMaybes)
+import Data.List (intercalate)
 import qualified Data.Set as S
 import Text.Parsec hiding (State)
 import Text.Parsec.String (Parser)
@@ -61,7 +62,7 @@ parseConstraint ops p = Constraint <$> lincomb <*> op <*> (fromIntegral <$> pars
 
 -- | reads an fLTL formula
 ltlformula :: Parser (Formula String)
-ltlformula = spc *> (ptru <|> pfls <|> pprop <|> pnot <|> pnext <|> pfin <|> pglob <|> pparens) <* spc
+ltlformula = spc *> (try ptru <|> try pfls <|> pprop <|> pnot <|> pnext <|> pfin <|> pglob <|> pparens) <* spc
   where ptru = sym "true" *> pure Tru
         pfls = sym "false" *> pure Fls
         pprop  = Prop <$> prop
@@ -86,16 +87,12 @@ ltlformula = spc *> (ptru <|> pfls <|> pprop <|> pnot <|> pnext <|> pfin <|> pgl
 
 -- | parse a node label in the dot digraph. filters out the unique set with props
 parsenodel :: Parser (S.Set String)
-parsenodel = nonset *> option S.empty propset <* nonset <* eof
-  where propset = S.fromList <$> between (sym "{") (sym "}") (prop `sepBy` sym ",")
-        nonset = many (noneOf "{}")
-
+parsenodel = S.fromList <$> (spc *> (prop `sepBy` sym ",") <* eof)
 
 -- | parse an edge label in the dot digraph
 parseedgel :: Parser [EdgeL String]
-parseedgel = nonset *> (option [] $ between (sym "{") (sym "}") (edgel `sepBy` sym ",")) <* nonset <* eof
-  where nonset = many (noneOf "{}")
-        edgel = try (Right <$> upd) <|> (Left <$> (sym "[" *> (parseConstraint opMap prop `sepBy` sym ",") <* sym "]"))
+parseedgel = spc *> (edgel `sepBy` sym ",") <* eof
+  where edgel = try (Right <$> upd) <|> (Left <$> (sym "[" *> (parseConstraint opMap prop `sepBy` sym ",") <* sym "]"))
         updop = (sym "+=" *> pure (*1)) <|> (sym "-=" *> pure (*(-1)))
         upd = UpdateInc <$> prop <*> (updop <*> (fromIntegral <$> parseint))
 
@@ -107,10 +104,8 @@ parseDot dgs = catch (Just <$> evaluate g) handleErr
         g = parseDot' dgs
 
 -- | load a digraph from a dot file. unfortunately an exception can be thrown by the GraphViz API.
---  edge guards and updates are read from the label attribute with a string like
---  "whatever {GUARDS, UPDATES} whatever"
---  node propositions are either read from the label attribute "whatever {PROPS} whatever"
---  or from the custom props attributes with just "{PROPS}"
+--  edge guards and updates are read from the custom attributes 'updates' and 'guards'
+--  node propositions are read from the custom 'props' attributes with just "{PROPS}"
 --  both counters and propositions must start with a lowercase letter and can
 --  contain lowercase letters, digits and underscores.
 parseDot' :: String -> Graph String String
@@ -120,11 +115,7 @@ parseDot' dgs = mkGraph ns es
         es = map (\(DotEdge f t at) -> (f,t, parseEdge $ getLabel at)) $ graphEdges dg
         parseNode s = either error id $ parse' "could not parse node annotation: " parsenodel s s
         parseEdge s = either error id $ parse' "could not parse edge annotation: " parseedgel s s
-        getLabel = concat . catMaybes . map getStr
-        getStr (Label (StrLabel s)) = Just $ TL.unpack s
+        getLabel = intercalate "," . catMaybes . map getStr
+        -- getStr (Label (StrLabel s)) = Just $ TL.unpack s -- dont parse label, makes problems...
         getStr (UnknownAttribute k v) = if any (==TL.unpack k) ["props","updates","guards"] then Just $ TL.unpack v else Nothing
-        getStr (Label (RecordLabel _)) = error $ "Invalid node or edge annotation syntax! Either:\n"
-                                            ++ "\t* escape the braces like this: label=\"\\{a,b,c}\"\n"
-                                            ++ "\t* add additional text before and/or after the braces like this: label=\"some {a,b,c} text\"\n"
-                                            ++ "\t* use the special attributes 'props' (for nodes), 'updates' and 'guards' (for edges) like this: props=\"{a,b,c}\" updates=\"{x += 7}\"\n"
         getStr _ = Nothing
