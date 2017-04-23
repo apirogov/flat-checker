@@ -51,9 +51,9 @@ data PosVars = PosVars
 
   , posLbls    :: Vector Bool     -- ^ for each subformula, flag whether it holds at this position
   , posGCtrs   :: Vector Integer  -- ^ intermediate values of counters defined by the graph
-  , posUDCtrs   :: Vector Integer  -- ^ intermediate values of counters of the structure (delta)
-  , posUWCtrs   :: Vector Integer  -- ^ intermediate values of counters of the structure (witness)
-  , posUSufMax :: Vector Integer  -- ^ back-propagated maximum of future values of counters
+  , posUDCtrs  :: Vector Integer  -- ^ intermediate values of counters of the structure (delta)
+  , posUWCtrs  :: Vector Integer  -- ^ intermediate values of counters of the structure (witness)
+  , posUSufBest :: Vector Integer -- ^ back-propagated maximum of future values of counters
   }
 
 data Run = Run
@@ -494,7 +494,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
 
       , posUDCtrs = udvals V.! i
       , posUWCtrs = uwvals V.! i
-      , posUSufMax = usvals V.! i
+      , posUSufBest = usvals V.! i
 
       , posLbls = lblvals V.! i
 
@@ -531,11 +531,11 @@ showRun f g run width = B.render $ B.vcat B.top rows
 
         -- show counter column only if there are any
         -- uctrs = if V.null lp then B.nullBox
-        --         else mkCol "[(UD,UW,UM)_j]" $ (map (B.text . show . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufMax p))) r) ++ [lastloopinfo]
+        --         else mkCol "[(UD,UW,UM)_j]" $ (map (B.text . show . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufBest p))) r) ++ [lastloopinfo]
         uctrs = if V.null lp then B.nullBox
                 else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose
                      $ (map (B.text . show) untils):
-                       (map (map (B.text . show) . V.toList . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufMax p))) r)
+                       (map (map (B.text . show) . V.toList . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufBest p))) r)
                        ++[lastloopinfo]
         lastloopinfo = map B.text $ V.toList $ V.zipWith (\a b->a++"/"++b) (V.map show lp) (V.map goodness ld)
 

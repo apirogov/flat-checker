@@ -1,12 +1,12 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Main where
-import Data.Data
+import Data.Data (Data)
 import Data.Time (getCurrentTime)
-import Language.Haskell.TH
+import Language.Haskell.TH (stringE, runIO)
 import System.IO (hSetBuffering, BufferMode(..), stdout)
-import System.Console.Terminal.Size
+import System.Console.Terminal.Size (size, width)
 import System.Directory (doesFileExist)
-import Development.GitRev
+import Development.GitRev (gitBranch, gitHash, gitDirty)
 import Options.Applicative
 
 import Types
