@@ -3,10 +3,10 @@ module Solve (
 ) where
 import Data.Data
 import Prelude hiding (log)
-import Data.Bool
-import Data.Maybe
+import Data.Maybe (fromMaybe)
 import Data.Char (isAlphaNum)
-import Data.List (intercalate, transpose, sortOn, sort, groupBy)
+import Control.Arrow (second)
+import Data.List (intercalate, transpose, sortOn, sort, groupBy, nub)
 import qualified Data.Map as M
 import Data.Vector (Vector)
 import qualified Data.Vector as V
@@ -48,18 +48,20 @@ data PosVars = PosVars
   , posLStart :: Int              -- ^ if in loop, start node, else: 0 as dummy
   , posLCtr   :: Integer          -- ^ counter to calculate loop length
   , posLLen   :: Integer          -- ^ length of current loop (outside: 0)
+  , posLLast  :: Bool             -- ^ is part of left unrolling of last loop
 
   , posLbls    :: Vector Bool     -- ^ for each subformula, flag whether it holds at this position
   , posGCtrs   :: Vector Integer  -- ^ intermediate values of counters defined by the graph
   , posUDCtrs  :: Vector Integer  -- ^ intermediate values of counters of the structure (delta)
   , posUWCtrs  :: Vector Integer  -- ^ intermediate values of counters of the structure (witness)
-  , posUSufBest :: Vector Integer -- ^ back-propagated maximum of future values of counters
+  , posUSBest  :: Vector Integer  -- ^ back-propagated maximum of future values of counters
   }
 
 data Run = Run
   { runPos     :: Vector PosVars  -- ^ endcodes information present for every schema position
-  , runLHasPsi :: Vector Bool     -- ^ flag that says whether the last loop has a psi
+  , runLAllPhi :: Vector Bool     -- ^ flag that says whether the last loop has continuous phi
   , runLDelta  :: Vector Integer  -- ^ deltas of loop for the counters for U[m/n], outside loops: 0
+  , runGDelta  :: Vector Integer  -- ^ deltas of loop for the counter system edge guards
   }
 
 -- | loop type enum, different encodings in Z3 can be toggled
@@ -69,32 +71,34 @@ data LoopType = Out | Start | In | End deriving (Eq, Read, Show, Ord)
 (=<<<) :: (Traversable t, Monad m) => (t a -> m b) -> t (m a) -> m b
 f =<<< xs = f =<< sequence xs
 
+-- | calculate valid loop lens with Johnsons algorithm in (v+e)(c+1)
+--   selfloops must be unrolled to loops of size 2 -> we must always allow 2.
+--   apart of self-loops, all guessed loops are simple cycles in graph
+prepareLoopLens :: (String -> IO ()) -> Graph a b -> [Int] -> IO [Int]
+prepareLoopLens logf gr [] = do
+  logf "Enumerating simple cycle lengths..."
+  start0 <- currTime
+  let lens = IS.elems $ IS.insert 2 $ getCycleLens gr
+  end0 <- currTime
+  logf $ "Found lengths " ++ show lens ++ " in: " ++ showTime start0 end0
+  return lens
+
+-- | takes a provided list, insert 2 (for self-loop unrollings).
+--   if the provided lengths are incomplete, probably a solution will not be found!
+--   if a superset is provided, the formula will be bigger than neccessary,
+--   but may be a good idea for small, but REALLY dense graphs (try giving [1..n])
+prepareLoopLens logf _ ls = do
+  let lens = IS.elems $ IS.insert 2 $ IS.fromList ls
+  logf $ "Using provided simple cycle lengths: " ++ show lens
+  return lens
+
 -- | input: graph structure and configuration with formula and settings
 --   output: valid run if possible
 findRun :: (Show a, Show b, Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
 findRun conf gr = do
   let n = slvSchemaSize conf
   when (n <= 0) $ error "path schema must have positive size!"
-
-  lens <- case slvLoopLens conf of
-    [] -> do
-      -- calculate valid loop lens with Johnsons algorithm in (v+e)(c+1)
-      -- selfloops must be unrolled to loops of size 2 -> we must always allow 2.
-      -- apart of self-loops, all guessed loops are simple cycles in graph
-      log "Enumerating simple cycle lengths..."
-      start0 <- currTime
-      let lens = IS.elems $ IS.insert 2 $ getCycleLens gr
-      end0 <- currTime
-      log $ "Found lengths " ++ show lens ++ " in: " ++ showTime start0 end0
-      return lens
-    -- if the provided lengths are incomplete, probably a solution will not be found!
-    -- if a superset is provided, the formula will be bigger than neccessary,
-    -- but may be a good idea for small, but REALLY dense graphs (provide [1..n])
-    ls -> do
-      let lens = IS.elems $ IS.insert 2 $ IS.fromList ls
-      log $ "Using provided simple cycle lengths: " ++ show lens
-      return lens
-
+  lens <- prepareLoopLens log gr $ slvLoopLens conf
   let gr'   = splitDisjunctionGuards gr
       conf' = conf{slvLoopLens=lens, slvMinimal=False}
       findRunFix c = findRun' conf'{slvSchemaSize=c} gr'
@@ -143,12 +147,18 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
   _0 <- mkInteger 0
   _1 <- mkInteger 1
   let indices = [0..n-1]            -- helper to quantify over indices of variables
+
   let ge = edges gr                 -- get directed edges of graph
+  -- (node a, node b, all edges a->b)
+  let homset = map (\x@((a,b,_):_) -> (a,b,map edgeLabel x) ) $ groupBy sameNodes $ sort ge
+        where sameNodes (a,b,_) (d,e,_) = a==d && b==e
   let ctrs = counters gr            -- get list of all symbols used as counters in graph
   let ctr2num = M.fromList $ zip ctrs [0..] -- mapping from counters in graph to their indices
+  let grds = nub $ sort $ concatMap (guards . edgeLabel) ge -- list of all guards in counter system
+  let grd2num = M.fromList $ zip grds [0..] -- mapping from guards in graph to their indices
 
   -- variables to store node ids of path schema
-  (EnumAPI mkFreshNidVar evalNid isNid eqNid) <- bool (mkEnumSort "Nid") mkIntEnumSort useIntIds $ (nodes gr) ++ [-1]
+  (EnumAPI mkFreshNidVar evalNid isNid eqNid) <- (if useIntIds then mkIntEnumSort else mkEnumSort "Nid") $ (nodes gr) ++ [-1]
   ids <- mkVarVec mkFreshNidVar "nid" indices
 
   -- | given an edge and a pair of variable node ids, express that they represent this edge
@@ -158,7 +168,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
 
   -- variables to indicate loop structure
   -- no self loops, only "simple" loops (no internal id equal to left or right border)
-  (EnumAPI mkFreshLTVar evalLT isLtype _) <- bool (mkEnumSort "Lt") mkBoolEnumSort useBoolLT $ [Out,Start,In,End]
+  (EnumAPI mkFreshLTVar evalLT isLtype _) <- (if useBoolLT then mkBoolEnumSort else mkEnumSort "Lt") [Out,Start,In,End]
   lt <- mkVarVec mkFreshLTVar "lt" indices
   let isOneOfLT = mkAny isLtype
 
@@ -172,6 +182,8 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
   lctr <- mkVarVec mkFreshIntVar "lct" indices
   -- loop length indicator (derived from lctr)
   llen <- mkVarVec mkFreshIntVar "lln" indices
+  -- indicates left unrolling of last loop
+  llast <- mkVarVec mkFreshBoolVar "llu" indices
 
   -- get all subformulas with assigned id
   let sfs = enumerateSubformulas f
@@ -195,12 +207,15 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
   let maxllen = min n (maximum lens) -- maximum allowed loop len (simple loops in graph)
   -- ldelta[i][j] is meaning ldelta[n-maxllen+i][j]
   ldeltas  <- mkVarMat mkFreshIntVar  "ld" [1..maxllen] uindices
-  -- last loop has psi of U[r]_j ?
-  lhaspsi  <- mkVarVec mkFreshBoolVar "lp" uindices
+  -- last loop has phi in all positions for U[r]_j ?
+  lallphi  <- mkVarVec mkFreshBoolVar "lp" uindices
 
   -- values for graph counters, similar to uctrs
   let cindices = [0..length ctrs-1]
   gctrs <- mkVarMat mkFreshIntVar "gct" indices cindices
+  let gindices = [0..length grds-1]
+  -- gdelta[i][j] is meaning gdelta[n-maxllen+i][j]
+  gdeltas  <- mkVarMat mkFreshIntVar "gd" [1..maxllen] gindices
 
   -- linear combination of variables at position i
   let lincomb i lc = mkAdd =<< mapM (\(c,var) -> mkMul =<<< [mkInteger c, pure $ at gctrs i $ ctr2num M.! var]) lc
@@ -240,35 +255,30 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
   let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
 
   -- general assertions about path schema structure
-  assert =<< mkForallI indices (\i -> mkAnd =<<<
-    [ -- neighboring ids must have valid edge (check that non-looping path is valid)
+  assert =<< mkForallI indices (\i -> mkAnd =<<< [
+    -- neighboring ids must have valid edge (check that non-looping path is valid)
       ifT (i>0) $ isValidEdge (ids V.! (i-1), ids V.! i)
-      -- enforce looptype structure (Out | Start (In*) End)*(Start (In*) End)
+    -- enforce looptype structure (Out | Start (In*) End)*(Start (In*) End)
     , ifT (i>0) $ mkAnd =<<< (map join
-        [ mkImplies <$> (isLtype Start (lt V.! i)) <*> (isLtype Out           (lt V.! (i-1)))
-        , mkImplies <$> (isLtype End   (lt V.! i)) <*> (isOneOfLT [In,Start]  (lt V.! (i-1)))
-        , mkImplies <$> (isLtype In    (lt V.! i)) <*> (isOneOfLT [In,Start]  (lt V.! (i-1)))
-        , mkImplies <$> (isLtype Out   (lt V.! i)) <*> (isOneOfLT [Out,End]   (lt V.! (i-1)))
+        [ mkImplies <$> (isOneOfLT [Out,Start] (lt V.! i)) <*> (isOneOfLT [Out,End]  (lt V.! (i-1)))
+        , mkImplies <$> (isOneOfLT [In,End]    (lt V.! i)) <*> (isOneOfLT [In,Start] (lt V.! (i-1)))
         ])
 
-      -- loop count >= 0 in general
+    -- loop count >= 0 in general
     , mkLe _0 (lcnt V.! i)
-      -- loop count > 1 in all loops but last (which ends at n-1)
+    -- loop count > 1 in all loops but last (which ends at n-1)
     , ifT (i<n-1) $ join $ mkImplies <$> isLtype End (lt V.! i) <*> mkLt _1 (lcnt V.! i)
-      -- loop count = 1 <-> outside of loop
+    -- loop count = 1 <-> outside of loop
     , join $ mkIff <$> isLtype Out (lt V.! i) <*> mkEq (lcnt V.! i) _1
-      -- consistent loopcount in loops
-    , ifT (i>0) $ mkAnd =<<<
-      [ join $ mkImplies <$> isLtype In    (lt V.! i) <*> (mkEq (lcnt V.! i) (lcnt V.! (i-1)))
-      , join $ mkImplies <$> isLtype End   (lt V.! i) <*> (mkEq (lcnt V.! i) (lcnt V.! (i-1)))
-      ]
-      -- add up all node repetitions to get run length
+    -- consistent loopcount in loops
+    , ifT (i>0) $join $ mkImplies <$> isOneOfLT [In,End] (lt V.! i) <*> (mkEq (lcnt V.! i) (lcnt V.! (i-1)))
+    -- add up all node repetitions to get run length
     , ifT (i>0) $ join $ mkEq (steps V.! i) <$> mkAdd [steps V.! (i-1), lcnt V.! i]
 
+    -- outside loops start id is -1 (as dummy)
+    , join $ mkImplies <$> (isLtype Out   (lt V.! i)) <*> (isNid (-1) (lst V.! i))
     -- take loop start id at start from curr id
     , join $ mkImplies <$> (isLtype Start (lt V.! i)) <*> (eqNid (lst V.! i) (ids V.! i))
-    -- outside loops start id is -1 (as dummy)
-    , join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> (isNid (-1) (lst V.! i))
     -- propagate start id forward in loop
     , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> eqNid (lst V.! (i-1)) (lst V.! i)
 
@@ -283,14 +293,11 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
     , join $ mkImplies <$> isLtype Out (lt V.! i) <*> mkEq (llen V.! i) _0
     -- loop length init at loop end
     , join $ mkImplies <$> isLtype End (lt V.! i) <*> mkEq (lctr V.! i) (llen V.! i)
-    -- loop length counter propagate
+    -- loop length propagate
     , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> mkEq (llen V.! (i-1)) (llen V.! i)
 
-    -- valid backloop and also loop length (restrict to possible lengths of simple loops in orig. graph)
-    , join $ mkImplies <$> isLtype End (lt V.! i) <*> (mkAnd =<<<
-        [ isValidEdge (ids V.! i, lst V.! i) -- valid backloop
-        , withLoopLen i $ const mkTrue       -- valid loop length
-        ])
+    -- valid backloop
+    , join $ mkImplies <$> isLtype End (lt V.! i) <*> (isValidEdge (ids V.! i, lst V.! i))
 
     -- the following unrollings enforce that the loops satisfy all until label
     -- conditions, as only such loops can be chosen which don't need to be split
@@ -302,6 +309,8 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
         [ isLtype Out (lt V.! (i-l))
         , eqNid (ids V.! i) (ids V.! (i-l))
         , allEq i (i-l) (snd <$> M.toList sfs) labels
+        -- also mark left unrolling of last loop
+        , join $ mkIff <$> (mkEq (lcnt V.! i) _0) <*> (pure $ llast V.! (i-l))
         ])))
 
     -- enforce 1x unrolled right for efficient normal until checking (unless last loop)
@@ -314,8 +323,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
         ])))
 
     -- enforce correct graph counter updates and guards
-    , let sameNodes (a,b,_) (d,e,_) = a==d && b==e in
-      ifT (i>0) $ mkForallI (map (\x@((a,b,_):_) -> (a,b,map edgeLabel x) ) $ groupBy sameNodes $ sort ge) (\(a,b,ls) -> do
+    , ifT (i>0) $ mkForallI homset (\(a,b,ls) -> do
       mkExistsI ls $ \l -> do
         let (upd, grd) = (updates l, guards l)
         join $ mkImplies <$> isEdge (a,b) (ids V.! (i-1), ids V.! i) <*> mkAnd =<<<
@@ -324,14 +332,33 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
               let (j, u) = (ctr2num M.! ctr, fromMaybe 0 $ M.lookup ctr upd)
               in isIncMul (mkInteger u) (lcnt V.! (i-1)) (at gctrs (i-1) j) (at gctrs i j) )
             -- guards are respected outside loops. as each loop is unrolled in
-            -- both directions and a loop has a constant delta, this is sufficient
+            -- both directions and a loop has a constant delta, this is sufficient for finite loops
           , join $ mkImplies <$> (isLtype Out (lt V.! (i-1))) <*> mkForallI grd (respectGuardAt i)
+            -- special case for guards inside of last loop -> need unbounded direction <=> good or neutral for all constraints
+          , join $ mkImplies <$> (mkEq _0 (lcnt V.! i)) <*> mkForallI grd (\g@(op,_) ->
+              (if op `elem` [CGe,CGt] then mkGe else mkLe) (at gdeltas (maxllen-1) $ grd2num M.! g) _0)
           ])
+
+    -- calculate loop deltas for guards
+    , mkForallI (M.toList grd2num) $ \((_,(lc,_)), j) -> do
+        let i' = n-maxllen+i
+        let calcUpdate k = join $ mkAdd <$> (forM homset $ \(a,b,ls) -> join $ mkAdd <$> (forM ls $ \l -> do
+              let upd = updates l
+              join $ mkIte <$> (isEdge (a,b) (ids V.! (k-1), ids V.! k)) <*>
+                (mkAdd =<<< map (\(c,ctr) ->mkMul =<<< [mkInteger $ fromMaybe 0 $ M.lookup ctr upd, mkInteger c]) lc) <*> (pure _0)))
+
+        ifT (i<maxllen) $ join $ mkIte <$> (mkGt (lcnt V.! i') _0)
+          <*> mkEq (at gdeltas i j) _0 -- outside of loop -> 0
+          <*> (join $ mkIte <$> isLtype Start (lt V.! i') -- in last loop: propagate and add as usual to the right
+               <*> ifF (i'>0) (join $ mkEq (at gdeltas i j) <$> (calcUpdate i'))
+               <*> ifF (i>0)  (isInc (calcUpdate i') (at gdeltas (i-1) j) (at gdeltas i j))
+              )
 
     -- enforce correct until counter updates
     , mkForallI (M.toList untils) (\((Until (Just (Constraint xs _ _)) _ _), j) -> do
           -- for each formula in constraint, add its weight if it holds or do nothing
       let calcUpdate k = mkAdd =<< mapM (\(v,w) -> join $ mkIte (at labels k (sfs M.! w)) <$> mkInteger v <*> pure _0) xs
+      let i' = n-maxllen+i
       mkAnd =<<<
           -- counter value at i>0 = old value at i-1 + update on edge from i-1 times the number of visits of i-1
           -- (proportional to number of node visits, semantically invalid inside loops, just used as accumulator there)
@@ -345,8 +372,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
 
 
           -- accumulate loop deltas for last loop (we have only maxllen positions, at right of the schema)
-        , let i' = n-maxllen+i in
-          ifT (i<maxllen) $ mkAnd =<<<
+        , ifT (i<maxllen) $ mkAnd =<<<
           [ join $ mkImplies <$> isLtype Out (lt V.! i') <*> mkEq (at ldeltas i j) _0 -- outside of loop -> 0
           , join $ mkImplies <$> (mkEq (lcnt V.! i') _0) <*> (mkAnd =<<<              -- in last loop:
             -- propagate and add as usual to the right
@@ -371,12 +397,8 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
           Or _ _ ->  lbl_ij_equiv_to $ mkOr  (lbl i <$> subf)
           Not _ ->   lbl_ij_equiv_to $ mkNot (head $ lbl i <$> subf)
 
-          -- for next the subf. must hold on all successors -> next node and backloop if any
-          Next _ ->  lbl_ij_equiv_to $ mkAnd =<<<
-            [ ifT (i<n-1) $ mkAnd (lbl (i+1) <$> subf) -- subf. must hold in succ. node
-            -- backloop edge -> check value from left unrolled copy (it's successor is the same node)
-            , join $ mkImplies <$> (isLtype End (lt V.! i)) <*> withLoopLen i (\l -> ifF (i-l>=0) $ pure $ lbl (i-l) j)
-            ]
+          -- for next the subf. must hold in next position, loops are taken care of automatically by demanding equally labelled unrollings
+          Next _ ->  ifT (i<n-1) $ lbl_ij_equiv_to $ mkAnd (lbl (i+1) <$> subf)
 
           -- need to consider subformulas in until separately.. get their subformula index and set constraints
           Until Nothing a b -> do -- this is the regular until
@@ -385,13 +407,13 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
             lbl_ij_equiv_to $ mkOr =<<<
                 -- ψ holds -> until holds here
               [ pure $ lbl i psi
-                -- φ holds -> until works here if it holds in next position too
-              , ifF (i<n-1) $ mkAnd =<<< [pure $ lbl i phi, pure $ lbl (i+1) j]
-                -- if we are at the last position, check the unrolled copy at the left and ensure that there really is a psi
-              , ifF (i==n-1) $ mkAnd =<<<
-                  [ withLoopLen i (\l -> ifF (i-l>=0) $ pure $ lbl (i-l) j)
-                  , mkExistsI [i-maxllen+1..i] (\k -> ifF (k>=0) $ mkAnd =<<< [pure $ at labels k psi, mkEq (lcnt V.! k) _0])
-                  ]
+                -- φ holds and...
+              , mkAnd =<<< [ pure $ lbl i phi, mkOr =<<< [
+                  -- until holds in next position too
+                  ifF (i<n-1)  $ pure $ lbl (i+1) j
+                  -- or, if we are at the last position, ensure that there really is a psi on the left inside the loop
+                , ifF (i==n-1) $ mkExistsI [i-maxllen+1..i] (\k -> ifF (k>=0) $ mkAnd =<<< [pure $ at labels k psi, mkEq (lcnt V.! k) _0])
+                  ]]
               ]
 
           u@(Until (Just (Constraint _ op c)) a b) -> do -- this is the linear constraint until
@@ -399,15 +421,18 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
                 phi = sfs M.! a
                 psi = sfs M.! b
                 k   = untils M.! u                -- get index of this evil until in evil until list
-            -- φU[c]ψ <-> φUψ ∧ [c] holds. we check this outside loops, loops copy their unrollings
+            -- φU[c]ψ <-> φUψ ∧ [c] holds (we check this only outside of loops, unrollings ensure correct label inside)
             join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> lbl_ij_equiv_to (mkAnd =<<<
               [ pure $ lbl i reg   -- φUψ holds, and ...
               , let satisfiesConstraint var = (opop op) var =<< mkAdd =<<< [mkInteger c, pure $ at uwctrs i k]
+                    strictlyGoodLoop = (if op `elem` [CGt,CGe] then mkGt else mkLt) (at ldeltas (maxllen-1) k) _0
                 in  mkOr =<<<
                         -- when ψ holds, we can check constraint directly, or...
                       [               mkAnd =<<< [pure $ lbl i psi, satisfiesConstraint (at uwctrs i k)       ]
                         -- φ holds and there is a pos. k>i where ψ holds fulfilling [c] (which backpropagated it's reached value)
                       , ifF (i<n-1) $ mkAnd =<<< [pure $ lbl i phi, satisfiesConstraint (at ucsufbest (i+1) k)]
+                        -- φ holds in whole last loop and loop is good and we are in left urolling
+                      , mkAnd =<<< [pure $ llast V.! i, pure $ lallphi V.! k, strictlyGoodLoop]
                       ]
               ])
       )
@@ -427,20 +452,20 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
                         | otherwise = error "ERROR: Equality constraints in formulae are forbidden!"
 
     mkAnd =<<<
-        -- lhaspsi_j <-> there is a psi in the last loop for U[r]_j
-      [ join $ mkIff (lhaspsi V.! j) <$> (mkExistsI [n-maxllen..n-1] (\i ->
-          mkAnd =<<< [pure $ at labels i psi, mkEq (lcnt V.! i) _0]))
+      [ -- lallphi_j <-> in the last loop all positions have phi for U[r]_j
+        join $ mkIff (lallphi V.! j) <$> (mkForallI [n-maxllen..n-1] (\i ->
+          mkOr =<<< [pure $ at labels i phi, mkGt (lcnt V.! i) _0]))
 
         -- calculate counter suffix max/min: start with bottom, if not psi, else current value ...
-        , join $ mkIte (at labels (n-1) psi) <$> (mkEq (at ucsufbest (n-1) j) (at uwctrs (n-1) j))
-                                             <*> (mkEq (at ucsufbest (n-1) j) =<< bottom)
+      , join $ mkIte (at labels (n-1) psi) <$> (mkEq (at ucsufbest (n-1) j) (at uwctrs (n-1) j))
+                                           <*> (mkEq (at ucsufbest (n-1) j) =<< bottom)
 
         -- then, at psi positions take best of current and future, otherwise just push through, reset when chain broken
-        , mkForallI (init indices) (\i -> join $
-            mkIte <$> (ifF (i>0) $ pure $ at labels (i-1) phi)
-              <*> (join $ mkIte (at labels i psi) <$> ((keepBetterFor op) (at ucsufbest (i+1) j) (at uwctrs i j)) (mkEq (at ucsufbest i j))
-                                                  <*> (mkEq (at ucsufbest i j) (at ucsufbest (i+1) j)))
-              <*> (mkEq (at ucsufbest i j) =<< bottom))
+      , mkForallI (init indices) (\i -> join $
+          mkIte <$> (ifF (i>0) $ pure $ at labels (i-1) phi)
+            <*> (join $ mkIte (at labels i psi) <$> ((keepBetterFor op) (at ucsufbest (i+1) j) (at uwctrs i j)) (mkEq (at ucsufbest i j))
+                                                <*> (mkEq (at ucsufbest i j) (at ucsufbest (i+1) j)))
+            <*> (mkEq (at ucsufbest i j) =<< bottom))
       ])
 
   -------------------------------------------------------------------------------------------------------------------------------
@@ -470,6 +495,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
     lstvals <- getVec evalNid lst
     lctrvals <- getVec evalInt lctr
     llenvals <- getVec evalInt llen
+    llastvals <- getVec evalBool llast
 
     udvals <- getMat evalInt udctrs
     uwvals <- getMat evalInt uwctrs
@@ -479,8 +505,9 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
 
     gcvals <- getMat evalInt gctrs
 
-    lpvals <- getVec evalBool lhaspsi
+    lpvals <- getVec evalBool lallphi
     ldvals <- getVec evalInt $ ldeltas V.! (maxllen-1)
+    gdvals <- getVec evalInt $ gdeltas V.! (maxllen-1)
 
     return $ Run (V.generate (length indices) (\i ->
       PosVars {
@@ -491,15 +518,16 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
       , posLStart = lstvals V.! i
       , posLCtr = lctrvals V.! i
       , posLLen = llenvals V.! i
+      , posLLast = llastvals V.! i
 
       , posUDCtrs = udvals V.! i
       , posUWCtrs = uwvals V.! i
-      , posUSufBest = usvals V.! i
+      , posUSBest = usvals V.! i
 
       , posLbls = lblvals V.! i
 
       , posGCtrs = gcvals V.! i
-      })) lpvals ldvals
+      })) lpvals ldvals gdvals
   end2 <- currTime
   log $ "Finished after: "++showTime start2 end2
   return result
@@ -507,10 +535,11 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
 
 -- | generate pretty-printed run string for output
 showRun :: (Data a, Ord a, Ord b, Show a, Show b) => Formula a -> Graph a b -> Run -> Maybe Int -> String
-showRun f g run width = B.render $ B.vcat B.top rows
+showRun f g run width = B.render $ B.vcat B.top $ rows -- ++[B.text $ show gd]
   where rv = runPos run
-        lp = runLHasPsi run
+        lp = runLAllPhi run
         ld = runLDelta run
+        gd = runGDelta run
         r = V.toList rv
         ctrs = counters g
 
@@ -524,18 +553,18 @@ showRun f g run width = B.render $ B.vcat B.top rows
         num = mkCol "N"  $ map (B.text . show) [1..length rv]
         sep = mkCol "|"  $ map B.text (["|"] <* [1..length rv])
         ids = mkCol "ID" $ map (B.text . show       . posId) r
-        lts = mkCol "LT" $ map (B.text . lsym       . posLType) r
+        lts = mkCol "LT" $ map (B.text . llast . second lsym . addLT posLLast) r
         lst = mkCol "LS" $ map (B.text . showIfLoop . addLT posLStart) r
         lln = mkCol "LL" $ map (B.text . showIfLoop . addLT posLLen) r
         lcs = mkCol "LC" $ map (B.text . lcount     . posLCount) r
 
         -- show counter column only if there are any
         -- uctrs = if V.null lp then B.nullBox
-        --         else mkCol "[(UD,UW,UM)_j]" $ (map (B.text . show . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufBest p))) r) ++ [lastloopinfo]
-        uctrs = if V.null lp then B.nullBox
+        --         else mkCol "[(UD,UW,UM)_j]" $ (map (B.text . show . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSBest p))) r) ++ [lastloopinfo]
+        uctrs = if V.null ld then B.nullBox
                 else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose
                      $ (map (B.text . show) untils):
-                       (map (map (B.text . show) . V.toList . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSufBest p))) r)
+                       (map (map (B.text . show) . V.toList . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSBest p))) r)
                        ++[lastloopinfo]
         lastloopinfo = map B.text $ V.toList $ V.zipWith (\a b->a++"/"++b) (V.map show lp) (V.map goodness ld)
 
@@ -562,6 +591,8 @@ showRun f g run width = B.render $ B.vcat B.top rows
         lsym End = "-"
         lsym In = "|"
         lsym Out = " "
+        llast (True,_) = "+"
+        llast (_,s) = s
         lcount 1 = ""
         lcount n = show n
         goodness n | n>0 = "+" | n==0 = "=" | otherwise = "-"
