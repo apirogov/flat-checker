@@ -1,0 +1,8 @@
+/* try "(F[p>=5]true&XXXp)" with n=13 */
+digraph G {
+ 0 [props="p"];
+ 1 [props="q"];
+ 2 [props="q"];
+ 3 [props="r"];
+ 0 -> 1 -> 2 -> 0 -> 3;
+}

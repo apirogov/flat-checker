@@ -1,0 +1,4 @@
+Test cases for:
+- counter system guards: positive and negative tests for finite and last loop
+- Until for finite loops: satisfied, non-satisfied x continuous, non continuous, empty scopes
+- Until for infinite loop, same stuff

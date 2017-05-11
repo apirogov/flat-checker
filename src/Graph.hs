@@ -8,7 +8,8 @@
    Defines algorithms that work on both undirected and
    directed graphs.
 
-   <Extracted from Graphalyze package as it did not work with Stackage>
+   <Extracted from Graphalyze package as it did not work with Stackage,
+    used for comparison with Johnsons algorithm to get loop lengths in graph>
  -}
 module Graph
     ( -- * Graph decomposition
@@ -245,4 +246,3 @@ mkSimple = gmap simplify
           where
             p' = simpleEdges n p
             s' = simpleEdges n s
-

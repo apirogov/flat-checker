@@ -1,8 +1,8 @@
-name:                fltl-checker
+name:                flat-checker
 version:             0.1.0.0
-synopsis:            A bounded existential model checker for fLTL
+synopsis:            An experimental model checker for LTL with counting
 description:         Please see README.md
-homepage:            https://github.com/apirogov/fltl-checker
+homepage:            https://github.com/apirogov/flat-checker
 license:             BSD3
 license-file:        LICENSE
 author:              Anton Pirogov
@@ -15,7 +15,7 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Types, Parse, Solve, Graph, Cycles, Util, Z3Util
+  exposed-modules:     Types, Parse, Solve, Graph, Cycles, Util, Bench
   build-depends:       base >= 4.7 && < 5
                      , containers
                      , vector
@@ -29,15 +29,16 @@ library
                      , boxes
                      , graphviz
                      , z3
+                     , deepseq
   ghc-options:         -Wall -Wno-missing-signatures
   default-language:    Haskell2010
 
-executable fltl-checker
+executable flat-checker
   hs-source-dirs:      app
   main-is:             Main.hs
   ghc-options:         -O3 -threaded -rtsopts -with-rtsopts=-N -Wall
   build-depends:       base
-                     , fltl-checker
+                     , flat-checker
                      , directory
                      , optparse-applicative
                      , terminal-size
@@ -46,15 +47,15 @@ executable fltl-checker
                      , gitrev
   default-language:    Haskell2010
 
-test-suite fltl-checker-test
+test-suite flat-checker-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Spec.hs
   build-depends:       base
-                     , fltl-checker
+                     , flat-checker
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
 source-repository head
   type:     git
-  location: https://github.com/apirogov/fltl-checker
+  location: https://github.com/apirogov/flat-checker

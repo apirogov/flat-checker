@@ -12,7 +12,6 @@ import Options.Applicative
 import Types
 import Parse
 import Solve
-import Util
 
 -- | applicative parser for the args given on the command line
 confFromArgs :: Parser (SolveConf String String)
@@ -46,27 +45,22 @@ readGraph filename = do
     Nothing -> error "Error: Could not load graph from file."
     Just g  -> return g
 
--- | reads a directed graph from a file or stdin and checks the given formula for the specified schema size
-main :: IO ()
-main = do
-  let verStr = footer $ "Git: " ++ gitStr ++ "\tBuild time: " ++ btime
-        where gitStr = concat [$(gitBranch), "@", take 7 $(gitHash), if $(gitDirty) then "(modified)" else ""]
-              btime = $(stringE =<< runIO (show `fmap` getCurrentTime))
-
-  conf <- execParser $ info (helper <*> confFromArgs) (verStr <> fullDesc)
-  g <- readGraph $ slvGraphFile conf
-  findAndPrint conf g
-
--- | check some formula on some graph. This can also be used in ghci
+-- | check some formula on some graph.
 findAndPrint :: (Data a, Ord a, Ord b, Show a, Show b) => SolveConf a b -> Graph a b -> IO ()
 findAndPrint conf g = do
   hSetBuffering stdout LineBuffering  -- we want to see progress immediately
   w <- fmap width <$> size            -- obtain terminal width for pretty-printing
   r <- findRun conf g
-  case r of
-    Just run -> putStrLn "Solution:" >> putStrLn (showRun (slvFormula conf) g run w)
-    Nothing -> putStrLn "No solution found."
+  putStrLn $ maybe "No solution found." (const $ "Solution:\n" ++ rShow r w) $ rRun r
 
--- | unsafe REPL helper. tries to load graph, parse formula and solve. can throw exceptions
-unsafeSolve :: String -> String -> Int -> IO ()
-unsafeSolve gf f n = dotFromFile gf >>= \g -> findAndPrint (defaultSolveConf (formula f) n) g
+-- | reads a directed graph from a file or stdin and checks the given formula for the specified schema size
+main :: IO ()
+main = do
+  let verStr = footer $ "Git: " ++ gitStr ++ "\tBuild time: " ++ btime
+        where btime = $(stringE =<< runIO (show <$> getCurrentTime))
+              gitStr = concat [$(gitBranch), "@", take 7 $(gitHash),
+                               if $(gitDirty) then "(modified)" else ""]
+
+  conf <- execParser $ info (helper <*> confFromArgs) (verStr <> fullDesc)
+  g <- readGraph $ slvGraphFile conf
+  findAndPrint conf g

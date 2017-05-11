@@ -1,0 +1,39 @@
+/* ((F[incx-decy<=0]fin & F[incx-decy>=0]fin) & (F[incy-decx<=0]fin & F[incy-decx>=0]fin)) -n 46 */
+digraph {
+ 0[props="init"];
+ 1[props="incx"];
+ 2[props="incy"];
+ 3;
+ 4;
+ 5;
+ 6;
+ 7[props="decx"];
+ 8[props="decy"];
+ 9[props="fin"];
+
+ /* initialize some values for x and y */
+ 0 -> 1[updates="x+=1"];
+ 1 -> 1[updates="x+=1"];
+ 1 -> 2[updates="y+=1"];
+ 2 -> 2[updates="y+=1"];
+ 2 -> 3[guards="[x=4321,y=1234]"];
+
+ /* swap */
+ 3 -> 3[updates="z+=1"];
+ 3 -> 4[guards="[y-x-z=0]"];
+ 4 -> 4[updates="x+=1,y-=1,z-=1"];
+ 3 -> 5[guards="[x-y-z=0]"];
+ 5 -> 5[updates="y+=1,x-=1,z-=1"];
+ 4 -> 6[guards="[z=0]"];
+ 5 -> 6[guards="[z=0]"];
+
+ /* decrement back to zero */
+ 6 -> 7[updates="x-=1"];
+ 7 -> 7[updates="x-=1"];
+ 7 -> 8[updates="y-=1"];
+ 8 -> 8[updates="y-=1"];
+ 8 -> 9[guards="[x=0,y=0]"];
+ 9 -> 9;
+ /* the formula verifies that number of increments of x and decrements of y and
+  * vice versa are equal (in fact redundant, as already ensured by guards) */
+}

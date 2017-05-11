@@ -1,11 +1,12 @@
 module Solve (
-  SolveConf(..), defaultSolveConf, findRun, showRun
+  SolveConf(..), defaultSolveConf, Response(..), Run(..), findRun, showRun
 ) where
 import Data.Data
 import Prelude hiding (log)
 import Data.Maybe (fromMaybe)
 import Data.Char (isAlphaNum)
-import Control.Arrow (second)
+import Control.Arrow (second,(&&&))
+import Control.DeepSeq (($!!))
 import Data.List (intercalate, transpose, sortOn, sort, groupBy, nub)
 import qualified Data.Map as M
 import Data.Vector (Vector)
@@ -20,9 +21,8 @@ import qualified Text.PrettyPrint.Boxes as B
 
 import qualified Data.IntSet as IS
 import Cycles (getCycleLens)
-import Util (currTime, showTime, at)
+import Util
 import Types
-import Z3Util
 
 -- | configuration structure for the checker
 data SolveConf a b = SolveConf
@@ -41,6 +41,7 @@ data SolveConf a b = SolveConf
 defaultSolveConf :: Formula a -> Int -> SolveConf a b
 defaultSolveConf f n = SolveConf f n "" [] False False False False False False
 
+-- | type to store variables for each position
 data PosVars = PosVars
   { posId     :: Int              -- ^ node id at current position (first node: 0)
   , posLType  :: LoopType         -- ^ are we in or outide/at border of a loop
@@ -57,12 +58,25 @@ data PosVars = PosVars
   , posUSBest  :: Vector Integer  -- ^ back-propagated maximum of future values of counters
   }
 
+-- | type to store complete run
 data Run = Run
   { runPos     :: Vector PosVars  -- ^ endcodes information present for every schema position
   , runLAllPhi :: Vector Bool     -- ^ flag that says whether the last loop has continuous phi
   , runLDelta  :: Vector Integer  -- ^ deltas of loop for the counters for U[m/n], outside loops: 0
   , runGDelta  :: Vector Integer  -- ^ deltas of loop for the counter system edge guards
   }
+
+-- | type to store benchmarking information
+data Response = Response
+  { rJTime :: Double              -- ^ time used in cycle length search
+  , rCTime :: Double              -- ^ time used to build constraints
+  , rSize  :: Int                 -- ^ size of resulting formula
+  , rVars  :: Integer             -- ^ number of variables used in formula
+  , rTime  :: Double              -- ^ time in ms until a decision was made
+  , rRun   :: Maybe Run           -- ^ solution, if found
+  , rShow  :: Maybe Int -> String -- ^ solution as pretty-printed string
+  }
+newResp = Response 0 0 0 0 0 Nothing $ const ""
 
 -- | loop type enum, different encodings in Z3 can be toggled
 data LoopType = Out | Start | In | End deriving (Eq, Read, Show, Ord)
@@ -74,14 +88,15 @@ f =<<< xs = f =<< sequence xs
 -- | calculate valid loop lens with Johnsons algorithm in (v+e)(c+1)
 --   selfloops must be unrolled to loops of size 2 -> we must always allow 2.
 --   apart of self-loops, all guessed loops are simple cycles in graph
-prepareLoopLens :: (String -> IO ()) -> Graph a b -> [Int] -> IO [Int]
+prepareLoopLens :: (String -> IO ()) -> Graph a b -> [Int] -> IO ([Int], Double)
 prepareLoopLens logf gr [] = do
   logf "Enumerating simple cycle lengths..."
   start0 <- currTime
   let lens = IS.elems $ IS.insert 2 $ getCycleLens gr
+  _ <- return $!! show lens -- force evaluation to measure time
   end0 <- currTime
   logf $ "Found lengths " ++ show lens ++ " in: " ++ showTime start0 end0
-  return lens
+  return (lens,msTimeDiff start0 end0)
 
 -- | takes a provided list, insert 2 (for self-loop unrollings).
 --   if the provided lengths are incomplete, probably a solution will not be found!
@@ -90,54 +105,60 @@ prepareLoopLens logf gr [] = do
 prepareLoopLens logf _ ls = do
   let lens = IS.elems $ IS.insert 2 $ IS.fromList ls
   logf $ "Using provided simple cycle lengths: " ++ show lens
-  return lens
+  return (lens, 0)
 
 -- | input: graph structure and configuration with formula and settings
 --   output: valid run if possible
-findRun :: (Show a, Show b, Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
+findRun :: (Show a, Show b, Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO Response
 findRun conf gr = do
   let n = slvSchemaSize conf
   when (n <= 0) $ error "path schema must have positive size!"
-  lens <- prepareLoopLens log gr $ slvLoopLens conf
+  (lens,jtime) <- prepareLoopLens log gr $ slvLoopLens conf
   let gr'   = splitDisjunctionGuards gr
       conf' = conf{slvLoopLens=lens, slvMinimal=False}
       findRunFix c = findRun' conf'{slvSchemaSize=c} gr'
       ns = (takeWhile (<n) $ iterate (*2) 2) ++ [n]
+      expsearch :: IO (Response, Maybe (Int,Int))
       expsearch = foldM (\lastres (l,r) -> case lastres of
-                            Nothing -> do
+                            (_,Nothing) -> do
                               log $ "Trying schema size " ++ show r
                               res <- findRunFix r
-                              case res of
-                                Nothing -> return Nothing
+                              case rRun res of
+                                Nothing -> return (res, Nothing)
                                 -- found run -> keep that interval
-                                Just run -> return $ Just (run, (l,r))
-                            Just _ -> return lastres) Nothing $ zip ns (tail ns)
-      binsearch (run, (a,b))
-        | a+1>=b = return run
+                                Just _ -> return (res, Just (l,r))
+                            (_,Just _) -> return lastres) (newResp,Nothing) $ zip ns (tail ns)
+      binsearch :: (Response, Maybe (Int,Int)) -> IO (Response, Maybe (Int,Int))
+      binsearch r@(_, Nothing) = return r
+      binsearch r@(run, Just (a,b))
+        | a+1>=b = return r
         | otherwise = do
             let m = (1+a+b) `div` 2
             log $ "Minimal run is between " ++ show a ++ " and " ++ show b ++ ", trying " ++ show m
             res <- findRunFix m
-            case res of
-              Nothing   -> binsearch (run , (m,b))  -- try bigger
-              Just run' -> binsearch (run', (a,m))  -- try smaller
+            case rRun res of
+              Nothing -> binsearch (run, Just (m,b))  -- try bigger
+              Just _  -> binsearch (res, Just (a,m))  -- try smaller
 
-  debug $ show gr'
   -- fixed schema size -> just do it
-  if not $ slvMinimal conf || slvSearch conf then findRun' conf' gr'
+  if not $ slvMinimal conf || slvSearch conf
+  then do
+    res <- findRun' conf' gr'
+    return res{rJTime = jtime}
   else do
     -- find interval via exponential doubling up to n
     initrun <- expsearch
     -- perform binary search to find minimal result
-    if slvMinimal conf
-      then sequence $ binsearch <$> initrun
-      else return $ fst <$> initrun
+    res <- if slvMinimal conf
+           then fst <$> binsearch initrun
+           else return $ fst initrun
+    return $ res{rJTime = jtime}
   where log = when (slvVerbose conf) . liftIO . putStrLn
-        debug = when (slvDebug conf) . liftIO . putStrLn
+        -- debug = when (slvDebug conf) . liftIO . putStrLn
 
 -- | find run of fixed schema size for a already preprocessed graph
-findRun' :: (Data a, Ord a, Ord b) => SolveConf a b -> Graph a b -> IO (Maybe Run)
-findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ do
+findRun' :: (Data a, Ord a, Ord b, Show a, Show b) => SolveConf a b -> Graph a b -> IO Response
+findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ3 $ do
   log "Building constraints..."
   start1 <- currTime
 
@@ -471,13 +492,15 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
   -------------------------------------------------------------------------------------------------------------------------------
   -- extract satisfying model from Z3 if possible
   end1 <- currTime
+  let ctime = msTimeDiff start1 end1
   log $ "Build constraints: " ++ showTime start1 end1
-  st <- if verbose then T.pack <$> solverToString else pure T.empty --slow, do only in verbose mode for infos
+  st <- if verbose || debug then T.pack <$> solverToString else pure T.empty --slow, do only in verbose mode for infos
   let countDecl tname = if take 2 (reverse tname) == "T_" then max 0 (cnt-1) else cnt
         where cnt = fromIntegral $ length $ T.breakOnAll (T.pack tname) st :: Integer
-  let tinfo tname = tname ++ ": " ++ show (countDecl tname) ++ " "
   let tnames = ["Int","Bool","Nid_T","Lt_T"]
-  log $ "Formula size: " ++ show (T.length st) ++ " " ++ concat (tinfo <$> tnames)
+  let vNums = (id &&& countDecl) <$> tnames
+  let fSize = T.length st
+  log $ "Formula size: " ++ show fSize ++ " " ++ show vNums
 
   start2 <- currTime
   log "Searching..."
@@ -529,8 +552,10 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose _) gr = evalZ3 $ 
       , posGCtrs = gcvals V.! i
       })) lpvals ldvals gdvals
   end2 <- currTime
+  let timeUsed = msTimeDiff start2 end2
   log $ "Finished after: "++showTime start2 end2
-  return result
+  let showFun = maybe (const "") (\r -> showRun f gr r) result
+  return $ Response 0 ctime fSize (sum $ snd <$> vNums) timeUsed result showFun
   where log = when verbose . liftIO . putStrLn
 
 -- | generate pretty-printed run string for output
@@ -539,7 +564,7 @@ showRun f g run width = B.render $ B.vcat B.top $ rows -- ++[B.text $ show gd]
   where rv = runPos run
         lp = runLAllPhi run
         ld = runLDelta run
-        gd = runGDelta run
+        -- gd = runGDelta run
         r = V.toList rv
         ctrs = counters g
 

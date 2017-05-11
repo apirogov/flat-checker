@@ -3,8 +3,8 @@ module Parse (
 ) where
 
 import Types
-import Data.Maybe (catMaybes)
-import Data.List (intercalate)
+import Data.Maybe (mapMaybe)
+import Data.List (intercalate, sort, groupBy)
 import qualified Data.Set as S
 import Text.Parsec hiding (State)
 import Text.Parsec.String (Parser)
@@ -54,13 +54,13 @@ opMap = [("=",CEq), ("<=",CLe), (">=",CGe), ("<",CLt), (">",CGt)]
 
 parseConstraint ::  [(String,ConstraintOp)] -> Parser a -> Parser (Constraint a)
 parseConstraint ops p = Constraint <$> lincomb <*> op <*> (fromIntegral <$> parseint)
-  where lincomb = (:) <$>      ((,) <$> (((*) <$> optneg <*> option 1 (fromIntegral <$> parsenat))) <*> p)
-                      <*> many ((,) <$> (((*) <$> sign   <*> option 1 (fromIntegral <$> parsenat))) <*> p)
+  where lincomb = (:) <$>      ((,) <$> ((*) <$> optneg <*> option 1 (fromIntegral <$> parsenat)) <*> p)
+                      <*> many ((,) <$> ((*) <$> sign   <*> option 1 (fromIntegral <$> parsenat)) <*> p)
         optneg = option 1 (sym "-" *> pure (-1))
         sign = (sym "+" *> pure 1) <|> (sym "-" *> pure (-1))
         op = foldl1 (<|>) (map (\(a,b) -> try (string a *> pure b)) ops) <* spc
 
--- | reads an fLTL formula
+-- | reads an LTL formula
 ltlformula :: Parser (Formula String)
 ltlformula = spc *> (try ptru <|> try pfls <|> pprop <|> pnot <|> pnext <|> pfin <|> pglob <|> pparens) <* spc
   where ptru = sym "true" *> pure Tru
@@ -109,13 +109,18 @@ parseDot dgs = catch (Just <$> evaluate g) handleErr
 --  both counters and propositions must start with a lowercase letter and can
 --  contain lowercase letters, digits and underscores.
 parseDot' :: String -> Graph String String
-parseDot' dgs = mkGraph ns es
+parseDot' dgs = sanityCheck $ mkGraph ns es
   where dg = parseDotGraph (TL.pack dgs) :: DotGraph Int
         ns = map (\(DotNode n at)   -> (n,   parseNode $ getLabel at)) $ graphNodes dg
         es = map (\(DotEdge f t at) -> (f,t, parseEdge $ getLabel at)) $ graphEdges dg
+        noInit = all ((/=0) . fst) ns
+        isMulti = any ((>1) . length) $ groupBy (\(a,b,_) (c,d,_) -> a==c&&b==d) $ sort es
         parseNode s = either error id $ parse' "could not parse node annotation: " parsenodel s s
         parseEdge s = either error id $ parse' "could not parse edge annotation: " parseedgel s s
-        getLabel = intercalate "," . catMaybes . map getStr
+        getLabel = intercalate "," . mapMaybe getStr
         -- getStr (Label (StrLabel s)) = Just $ TL.unpack s -- dont parse label, makes problems...
-        getStr (UnknownAttribute k v) = if any (==TL.unpack k) ["props","updates","guards"] then Just $ TL.unpack v else Nothing
+        getStr (UnknownAttribute k v) = if (TL.unpack k) `elem` ["props","updates","guards"] then Just $ TL.unpack v else Nothing
         getStr _ = Nothing
+        sanityCheck | noInit  = error "Graph does not contain initial node with id 0!"
+                    | isMulti = error "Graph contains multiple edges between two states!"
+                    | otherwise = id

@@ -98,7 +98,7 @@ circuit ak s v rf = do
 
   if f then
     unblock v
-  else do
+  else
     forM_ akv $ \w -> do                              -- for w in Ak(v)
       bw <- use $ jB . to (V.! w)
       when (v `IS.notMember` bw) $                    --   if v not in B(w)

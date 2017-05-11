@@ -1,0 +1,8 @@
+/* (p[p>3]q) should fail */
+digraph {
+ 0[props="p"]
+ 1[props="p"]
+ 2[props="q"]
+ 0 -> 1 [updates="x+=1", guards="[x<=1],[x>=11]"];
+ 1 -> 0 -> 2 -> 2;
+}

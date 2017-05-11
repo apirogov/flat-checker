@@ -1,0 +1,6 @@
+/* try non-temporal formulas with n=5 */
+digraph G {
+ 0 [props="p,q"];
+ 1 [props=""];
+ 0 -> 1 -> 1;
+}

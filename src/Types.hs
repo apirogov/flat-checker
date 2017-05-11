@@ -5,7 +5,7 @@ module Types (
   nodes, edges, hasProp, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
 ) where
 -- required for formula
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, mapMaybe)
 import Data.Map (Map)
 import Data.List (sortOn)
 import qualified Data.Map as M
@@ -25,15 +25,16 @@ import Data.Graph.Inductive (Gr, LEdge)
 data ConstraintOp = CLt | CLe | CEq | CGe | CGt deriving (Eq, Ord, Data)
 
 instance Show ConstraintOp where
-  show x | x==CLt = " < " | x==CLe = " <= " | x==CEq = " = " | x==CGe = " >= " | x==CGt = " > " | otherwise = ""
+  show x | x==CLt = " < "  | x==CLe = " <= " | x==CEq = " = "
+         | x==CGe = " >= " | x==CGt = " > "  | otherwise = ""
 
+-- | universal linear constraint representation
 data Constraint a = Constraint [(Integer,a)] ConstraintOp Integer deriving (Eq, Ord, Data)
 
 instance Show a => Show (Constraint a) where
   show (Constraint xs op c) = lincomb ++ show op ++ show c
     where lincomb = dropWhile (=='+') $ concatMap (\(a,v) -> showNum a ++ show v) xs
           showNum x | x < 0 = show x | otherwise = '+':show x
-
 
 -- | AST of an fcLTL formula. Until has an optional constraint [Σ a_i·φ_i OP c]
 data Formula a = Tru | Fls | Prop a
@@ -45,7 +46,7 @@ data Formula a = Tru | Fls | Prop a
 instance Data a => Plated (Formula a)
 makePrisms ''Formula
 
--- custom Show instance for prettyprinting. same format is accepted by parseFormula
+-- | custom Show instance for prettyprinting. same format is accepted by parseFormula
 instance Show a => Show (Formula a) where
   show Tru = "true"
   show Fls = "false"
@@ -64,6 +65,7 @@ maybeShowConstraint Nothing = ""
 maybeShowConstraint (Just c) = "[" ++ show c ++ "]"
 
 type CollectState a = State (Int, Map (Formula a) Int) ()
+-- | collect all unique subformulas and assign them numbers
 addFormula :: Ord a => Formula a -> CollectState a
 addFormula f = modify addIfNew
   where addIfNew old@(currid, subfs) | f `M.member` subfs = old
@@ -90,8 +92,9 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 
 -- | can this formula be evaluated by simple lookup?
 isLocal :: Data a => Formula a -> Bool
-isLocal = not . or . map (\f -> has _Next f || has _Until f) . universe
+isLocal = any (\f -> has _Next f || has _Until f) . universe
 
+-- | represents counter update for a variable annotated at an edge
 data Update b = UpdateInc b Integer deriving (Show, Eq, Ord)
 
 -- | edges can be labelled with linear combinations of counters >=(true) / <(false) some value
@@ -110,7 +113,7 @@ hasProp gr p n = case G.lab gr n of
 
 -- | filter out the updates stored at an edge
 updates :: (Ord b) => [EdgeL b] -> Map b Integer
-updates xs = M.fromList $ catMaybes $ map getUpdate xs
+updates xs = M.fromList $ mapMaybe getUpdate xs
   where getUpdate (Right (UpdateInc b i)) = Just (b,i)
         getUpdate _ = Nothing
 
