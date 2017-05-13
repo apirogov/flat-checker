@@ -66,7 +66,7 @@ ltlformula = spc *> (try ptru <|> try pfls <|> pprop <|> pnot <|> pnext <|> pfin
   where ptru = sym "true" *> pure Tru
         pfls = sym "false" *> pure Fls
         pprop  = Prop <$> prop
-        pnot  = Not  <$> (sym "~" *> ltlformula)
+        pnot  = Not  <$> ((sym "~" <|> sym "!") *> ltlformula)
         pnext = Next <$> (sym "X" *> ltlformula)
         -- syntactic sugar
         pfin  = (\c f -> Until c Tru f)             <$> (sym "F" *> parseUConstr) <*> ltlformula
@@ -83,7 +83,9 @@ ltlformula = spc *> (try ptru <|> try pfls <|> pprop <|> pnot <|> pnext <|> pfin
         andop = sym "&" *> pure And
         orop  = sym "|" *> pure Or
         untilop = Until <$> (sym "U" *> parseUConstr)
-        binop = andop <|> orop <|> untilop
+        release c x y = Not (Until c (Not x) (Not y))
+        releaseop = release <$> (sym "R" *> parseUConstr)
+        binop = andop <|> orop <|> untilop <|> releaseop
 
 -- | parse a node label in the dot digraph. filters out the unique set with props
 parsenodel :: Parser (S.Set String)

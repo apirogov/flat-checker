@@ -53,6 +53,8 @@ instance Show a => Show (Formula a) where
   show (Prop p) = if c == '\'' || c=='\"' then init $ tail $ show p else show p
     where c = head (show p)
   show (Not (Until c Tru (Not g))) = "G"++maybeShowConstraint c++show g
+  show (Not (Until c (Not Fls) (Not g))) = "G"++maybeShowConstraint c++show g
+  show (Not (Until c (Not f) (Not g))) = "("++show f++"R"++maybeShowConstraint c++show g++")"
   show (Not f) = "~"++show f
   show (Next f) = "X"++show f
   show (And f g) = "("++show f ++ "&" ++ show g++")"
