@@ -95,8 +95,12 @@ parsenodel = S.fromList <$> (spc *> (prop `sepBy` sym ",") <* eof)
 parseedgel :: Parser [EdgeL String]
 parseedgel = spc *> (edgel `sepBy` sym ",") <* eof
   where edgel = try (Right <$> upd) <|> (Left <$> (sym "[" *> (parseConstraint opMap prop `sepBy` sym ",") <* sym "]"))
-        updop = (sym "+=" *> pure (*1)) <|> (sym "-=" *> pure (*(-1)))
-        upd = UpdateInc <$> prop <*> (updop <*> (fromIntegral <$> parseint))
+        updop = (sym "+=" *> pure 1) <|> (sym "-=" *> pure (-1)) <|> (sym ":=" *> pure 0)
+        upd  = do
+          x <- prop
+          o <- updop
+          v <- fromIntegral <$> parseint
+          return $ if o/=0 then UpdateInc x (o*v) else UpdateEq x v
 
 -- | load a digraph from a dot file. needs IO to catch failure
 parseDot :: String -> IO (Maybe (Graph String String))

@@ -97,7 +97,7 @@ isLocal :: Data a => Formula a -> Bool
 isLocal = any (\f -> has _Next f || has _Until f) . universe
 
 -- | represents counter update for a variable annotated at an edge
-data Update b = UpdateInc b Integer deriving (Show, Eq, Ord)
+data Update b = UpdateInc b Integer | UpdateEq b Integer deriving (Show, Eq, Ord)
 
 -- | edges can be labelled with linear combinations of counters >=(true) / <(false) some value
 --  and an increment for each counter can be provided
@@ -114,9 +114,10 @@ hasProp gr p n = case G.lab gr n of
   Just ps -> S.member p ps
 
 -- | filter out the updates stored at an edge
-updates :: (Ord b) => [EdgeL b] -> Map b Integer
+updates :: (Ord b) => [EdgeL b] -> Map b (Update b)
 updates xs = M.fromList $ mapMaybe getUpdate xs
-  where getUpdate (Right (UpdateInc b i)) = Just (b,i)
+  where getUpdate (Right (UpdateInc b i)) = Just (b, UpdateInc b i)
+        getUpdate (Right (UpdateEq  b i)) = Just (b, UpdateEq  b i)
         getUpdate _ = Nothing
 
 -- | filter out the guards stored at an edge, repacked in a tuple
@@ -145,14 +146,15 @@ toEdge = G.toEdge
 counters :: (Ord b) => Graph a b -> [b]
 counters gr = S.toList $ S.fromList $ concatMap (concatMap extract . G.edgeLabel) $ G.labEdges gr
   where extract (Right (UpdateInc b _)) = [b]
+        extract (Right (UpdateEq  b _)) = [b]
         extract (Left (Constraint xs _ _:cs)) = map snd xs ++ extract (Left cs)
         extract (Left []) = []
 
 -- | convert edges with multiple sets of guards (disjunction) to single edges (results in multigraph!)
+-- TODO: split nodes too, use stateful something
 splitDisjunctionGuards :: Graph a b -> Graph a b
 splitDisjunctionGuards g = G.mkGraph (G.labNodes g) es'
-  where es = edges g
-        es' = concatMap split es
+  where es' = concatMap split $ edges g
 
 -- | clone edges for each case of disjunction, keep same updates
 split :: LEdge [EdgeL b] -> [LEdge [EdgeL b]]

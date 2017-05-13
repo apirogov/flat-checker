@@ -349,24 +349,32 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
         let (upd, grd) = (updates l, guards l)
         join $ mkImplies <$> isEdge (a,b) (ids V.! (i-1), ids V.! i) <*> mkAnd =<<<
           [ -- update graph counters corresponding to edge labelling
-            mkForallI ctrs (\ctr ->
-              let (j, u) = (ctr2num M.! ctr, fromMaybe 0 $ M.lookup ctr upd)
-              in isIncMul (mkInteger u) (lcnt V.! (i-1)) (at gctrs (i-1) j) (at gctrs i j) )
+            mkForallI ctrs (\ctr -> do
+              let j = ctr2num M.! ctr
+              case M.lookup ctr upd of
+                Nothing -> mkEq (at gctrs (i-1) j) (at gctrs i j)
+                Just (UpdateInc _ u) -> isIncMul (mkInteger u) (lcnt V.! (i-1)) (at gctrs (i-1) j) (at gctrs i j)
+                Just (UpdateEq _ v) -> join $ mkEq <$> (mkInteger v) <*> (pure $ at gctrs i j)
+            )
             -- guards are respected outside loops. as each loop is unrolled in
             -- both directions and a loop has a constant delta, this is sufficient for finite loops
           , join $ mkImplies <$> (isLtype Out (lt V.! (i-1))) <*> mkForallI grd (respectGuardAt i)
             -- special case for guards inside of last loop -> need unbounded direction <=> good or neutral for all constraints
+            -- TODO: is this correct with resets?
           , join $ mkImplies <$> (mkEq _0 (lcnt V.! i)) <*> mkForallI grd (\g@(op,_) ->
               (if op `elem` [CGe,CGt] then mkGe else mkLe) (at gdeltas (maxllen-1) $ grd2num M.! g) _0)
           ])
 
-    -- calculate loop deltas for guards
+    -- calculate loop deltas for guards (only meaningful for loops without counter resets (:=))
     , mkForallI (M.toList grd2num) $ \((_,(lc,_)), j) -> do
         let i' = n-maxllen+i
         let calcUpdate k = join $ mkAdd <$> (forM homset $ \(a,b,ls) -> join $ mkAdd <$> (forM ls $ \l -> do
               let upd = updates l
+              let getInc Nothing = 0
+                  getInc (Just (UpdateEq _ _)) = 0
+                  getInc (Just (UpdateInc _ v)) = v
               join $ mkIte <$> (isEdge (a,b) (ids V.! (k-1), ids V.! k)) <*>
-                (mkAdd =<<< map (\(c,ctr) ->mkMul =<<< [mkInteger $ fromMaybe 0 $ M.lookup ctr upd, mkInteger c]) lc) <*> (pure _0)))
+                (mkAdd =<<< map (\(c,ctr) ->mkMul =<<< [mkInteger $ getInc $ M.lookup ctr upd, mkInteger c]) lc) <*> (pure _0)))
 
         ifT (i<maxllen) $ join $ mkIte <$> (mkGt (lcnt V.! i') _0)
           <*> mkEq (at gdeltas i j) _0 -- outside of loop -> 0
