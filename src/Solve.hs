@@ -7,7 +7,7 @@ import Data.Maybe (fromMaybe)
 import Data.Char (isAlphaNum)
 import Control.Arrow (second,(&&&))
 import Control.DeepSeq (($!!))
-import Data.List (intercalate, transpose, sortOn, sort, groupBy, nub)
+import Data.List (intercalate, transpose, sortOn, sort, nub)
 import qualified Data.Map as M
 import Data.Vector (Vector)
 import qualified Data.Vector as V
@@ -169,10 +169,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   _1 <- mkInteger 1
   let indices = [0..n-1]            -- helper to quantify over indices of variables
 
-  let ge = edges gr                 -- get directed edges of graph
-  -- (node a, node b, all edges a->b)
-  let homset = map (\x@((a,b,_):_) -> (a,b,map edgeLabel x) ) $ groupBy sameNodes $ sort ge
-        where sameNodes (a,b,_) (d,e,_) = a==d && b==e
+  let ge = edges gr                 -- get directed edges of graph (we have no multiedges, hence unique)
   let ctrs = counters gr            -- get list of all symbols used as counters in graph
   let ctr2num = M.fromList $ zip ctrs [0..] -- mapping from counters in graph to their indices
   let grds = nub $ sort $ concatMap (guards . edgeLabel) ge -- list of all guards in counter system
@@ -237,6 +234,8 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   let gindices = [0..length grds-1]
   -- gdelta[i][j] is meaning gdelta[n-maxllen+i][j]
   gdeltas  <- mkVarMat mkFreshIntVar "gd" [1..maxllen] gindices
+  -- is reset used for that var in last loop?
+  clreset  <- mkVarVec mkFreshBoolVar "cr" cindices
 
   -- linear combination of variables at position i
   let lincomb i lc = mkAdd =<< mapM (\(c,var) -> mkMul =<<< [mkInteger c, pure $ at gctrs i $ ctr2num M.! var]) lc
@@ -274,6 +273,16 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   let isIncMul c x a b = join $ mkEq b <$> (mkAdd =<<< [pure a,  mkMul =<<< [c, pure x]])
   -- helper: forall j. mat[i][j] = mat[i2][j]
   let allEq i i2 js mat = mkForallI js (\j -> mkEq (at mat i j) (at mat i2 j))
+
+  -- set flag whether a counter is reset in the last loop
+  assert =<< mkForallI ctrs (\ctr -> do
+    let isReset (Just (UpdateEq _ _)) = True
+        isReset _ = False
+        c = ctr2num M.! ctr
+        es = filter (\e -> isReset $ M.lookup ctr $ updates $ (\(_,_,l) -> l) e) ge
+        isResetEdge = mkAny isEdge (toEdge <$> es)
+    join $ mkIff (clreset V.! c) <$> (mkExistsI (tail indices) (\i ->
+           mkAnd =<<< [mkEq (lcnt V.! i) _0, isResetEdge (ids V.! (i-1),ids V.! i)])))
 
   -- general assertions about path schema structure
   assert =<< mkForallI indices (\i -> mkAnd =<<< [
@@ -334,6 +343,13 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
         , join $ mkIff <$> (mkEq (lcnt V.! i) _0) <*> (pure $ llast V.! (i-l))
         ])))
 
+    -- 2nd left unrolling to check counter resets with guards
+    , join $ mkImplies <$> (mkNot =<< isLtype Out (lt V.! i))
+        <*> (withLoopLen i (\l -> ifF (i-2*l >= 0) (mkAnd =<<<
+        [ isLtype Out (lt V.! (i-2*l))
+        , eqNid (ids V.! i) (ids V.! (i-2*l))
+        ])))
+
     -- enforce 1x unrolled right for efficient normal until checking (unless last loop)
     -- this is required for the regular until to check psi and to check graph guards
     , join $ mkImplies <$> (mkAnd =<<< [mkNot =<< isLtype Out (lt V.! i), mkNot =<< (mkEq (lcnt V.! i) _0)])
@@ -344,8 +360,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
         ])))
 
     -- enforce correct graph counter updates and guards
-    , ifT (i>0) $ mkForallI homset (\(a,b,ls) -> do
-      mkExistsI ls $ \l -> do
+    , ifT (i>0) $ mkForallI ge (\(a,b,l) -> do
         let (upd, grd) = (updates l, guards l)
         join $ mkImplies <$> isEdge (a,b) (ids V.! (i-1), ids V.! i) <*> mkAnd =<<<
           [ -- update graph counters corresponding to edge labelling
@@ -360,27 +375,28 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
             -- both directions and a loop has a constant delta, this is sufficient for finite loops
           , join $ mkImplies <$> (isLtype Out (lt V.! (i-1))) <*> mkForallI grd (respectGuardAt i)
             -- special case for guards inside of last loop -> need unbounded direction <=> good or neutral for all constraints
-            -- TODO: is this correct with resets?
           , join $ mkImplies <$> (mkEq _0 (lcnt V.! i)) <*> mkForallI grd (\g@(op,_) ->
-              (if op `elem` [CGe,CGt] then mkGe else mkLe) (at gdeltas (maxllen-1) $ grd2num M.! g) _0)
+              (if op==CEq then mkEq else if op `elem` [CGe,CGt] then mkGe else mkLe)
+                (at gdeltas (maxllen-1) $ grd2num M.! g) _0)
           ])
 
-    -- calculate loop deltas for guards (only meaningful for loops without counter resets (:=))
+    -- calculate loop deltas for guards
     , mkForallI (M.toList grd2num) $ \((_,(lc,_)), j) -> do
         let i' = n-maxllen+i
-        let calcUpdate k = join $ mkAdd <$> (forM homset $ \(a,b,ls) -> join $ mkAdd <$> (forM ls $ \l -> do
+        let calcUpdate k = join $ mkAdd <$> (forM ge $ \(a,b,l) -> do
               let upd = updates l
-              let getInc Nothing = 0
-                  getInc (Just (UpdateEq _ _)) = 0
-                  getInc (Just (UpdateInc _ v)) = v
+              let getInc (Just (UpdateInc _ v)) = v
+                  getInc _ = 0
+                  incIfNotReset ctr = join $ mkIte (clreset V.! (ctr2num M.! ctr)) _0 <$> (mkInteger $ getInc $ M.lookup ctr upd)
               join $ mkIte <$> (isEdge (a,b) (ids V.! (k-1), ids V.! k)) <*>
-                (mkAdd =<<< map (\(c,ctr) ->mkMul =<<< [mkInteger $ getInc $ M.lookup ctr upd, mkInteger c]) lc) <*> (pure _0)))
+                (mkAdd =<<< map (\(c,ctr) ->mkMul =<<< [incIfNotReset ctr, mkInteger c]) lc) <*> (pure _0))
+        let update = calcUpdate i'
 
         ifT (i<maxllen) $ join $ mkIte <$> (mkGt (lcnt V.! i') _0)
           <*> mkEq (at gdeltas i j) _0 -- outside of loop -> 0
           <*> (join $ mkIte <$> isLtype Start (lt V.! i') -- in last loop: propagate and add as usual to the right
-               <*> ifF (i'>0) (join $ mkEq (at gdeltas i j) <$> (calcUpdate i'))
-               <*> ifF (i>0)  (isInc (calcUpdate i') (at gdeltas (i-1) j) (at gdeltas i j))
+               <*> ifF (i'>0) (join $ mkEq (at gdeltas i j) <$> update)
+               <*> ifF (i>0)  (isInc update (at gdeltas (i-1) j) (at gdeltas i j))
               )
 
     -- enforce correct until counter updates
@@ -585,7 +601,7 @@ showRun f g run width = B.render $ B.vcat B.top $ rows -- ++[B.text $ show gd]
 
         num = mkCol "N"  $ map (B.text . show) [1..length rv]
         sep = mkCol "|"  $ map B.text (["|"] <* [1..length rv])
-        ids = mkCol "ID" $ map (B.text . show       . posId) r
+        ids = mkCol "ID" $ map (B.text . show       . realId g . posId) r
         lts = mkCol "LT" $ map (B.text . llast . second lsym . addLT posLLast) r
         lst = mkCol "LS" $ map (B.text . showIfLoop . addLT posLStart) r
         lln = mkCol "LL" $ map (B.text . showIfLoop . addLT posLLen) r

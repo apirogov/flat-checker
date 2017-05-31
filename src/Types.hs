@@ -2,10 +2,10 @@
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
   Graph, LEdge, EdgeL, ConstraintOp(..), Constraint(..), Update(..),
-  nodes, edges, hasProp, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
+  nodes, edges, hasProp, realId, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
 ) where
 -- required for formula
-import Data.Maybe (catMaybes, mapMaybe)
+import Data.Maybe (catMaybes, mapMaybe, fromMaybe)
 import Data.Map (Map)
 import Data.List (sortOn)
 import qualified Data.Map as M
@@ -105,13 +105,20 @@ type EdgeL b = Either [Constraint b] (Update b)
 
 -- | atomic propositions indexed by a, counters indexed by b, start node always has id 0
 -- constraint guards are in DNF, each inner list is a monome
-type Graph a b = Gr (Set a) [EdgeL b]
+-- nodes labelled with prop subsets and potential original copy of node (for bookkeeping)
+type Graph a b = Gr (Set a, Maybe G.Node) [EdgeL b]
 
 -- | has node n of graph gr the atomic proposition p?
 hasProp :: (Ord a) => Graph a b -> a -> Int -> Bool
 hasProp gr p n = case G.lab gr n of
   Nothing -> False
-  Just ps -> S.member p ps
+  Just ps -> S.member p $ fst ps
+
+-- | if this node is a clone, return id of its original copy (for the user output)
+realId :: Graph a b -> Int -> Int
+realId gr n = case G.lab gr n of
+  Nothing -> n
+  Just l -> fromMaybe n $ snd l
 
 -- | filter out the updates stored at an edge
 updates :: (Ord b) => [EdgeL b] -> Map b (Update b)
@@ -151,15 +158,32 @@ counters gr = S.toList $ S.fromList $ concatMap (concatMap extract . G.edgeLabel
         extract (Left []) = []
 
 -- | convert edges with multiple sets of guards (disjunction) to single edges (results in multigraph!)
--- TODO: split nodes too, use stateful something
 splitDisjunctionGuards :: Graph a b -> Graph a b
-splitDisjunctionGuards g = G.mkGraph (G.labNodes g) es'
-  where es' = concatMap split $ edges g
+splitDisjunctionGuards g = execState (mapM splitEdges $ edges g) g
+
+cloneNode :: G.Node -> State (Graph a b) G.Node
+cloneNode n = do
+  g <- get
+  let (_, ub) = G.nodeRange g
+  let n' = succ ub
+  -- NOTE: we dont need to copy incoming edges, does not matter which copy is visited
+  let outes = map (\(_,b,c) -> (n',b,c)) $ G.out g n
+  case G.lab g n of
+    Nothing -> error "something went wrong, node not labelled!"
+    Just (ps,orig) -> do
+      put $ G.insEdges outes $ G.insNode (n', (ps, maybe (Just n) Just orig)) g
+      return n'
 
 -- | clone edges for each case of disjunction, keep same updates
-split :: LEdge [EdgeL b] -> [LEdge [EdgeL b]]
-split e@(a,b,l) = if null grds then [e] else map (\grd -> (a, b, map Right upd ++ [Left grd])) grds
-  where (grds, upd) = separate l
+splitEdges :: LEdge [EdgeL b] -> State (Graph a b) ()
+splitEdges (a,b,l) = do
+  let (grds, upd) = separate l
+  case grds of
+    [] -> return ()
+    [_] -> return ()
+    (g:gs) -> do
+      put =<< G.insEdge (a,b,map Right upd ++ [Left g]) . G.delEdge (a,b) <$> get
+      mapM_ (\gg -> cloneNode b >>= (\n -> put =<< G.insEdge (a, n, map Right upd ++ [Left gg]) <$> get)) gs
 
 -- | separate guard monomes and updates
 separate :: [EdgeL b] -> ([[Constraint b]], [Update b])

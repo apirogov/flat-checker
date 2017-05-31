@@ -117,7 +117,7 @@ parseDot dgs = catch (Just <$> evaluate g) handleErr
 parseDot' :: String -> Graph String String
 parseDot' dgs = sanityCheck $ mkGraph ns es
   where dg = parseDotGraph (TL.pack dgs) :: DotGraph Int
-        ns = map (\(DotNode n at)   -> (n,   parseNode $ getLabel at)) $ graphNodes dg
+        ns = map (\(DotNode n at)   -> (n,   (parseNode $ getLabel at, Nothing))) $ graphNodes dg
         es = map (\(DotEdge f t at) -> (f,t, parseEdge $ getLabel at)) $ graphEdges dg
         noInit = all ((/=0) . fst) ns
         isMulti = any ((>1) . length) $ groupBy (\(a,b,_) (c,d,_) -> a==c&&b==d) $ sort es

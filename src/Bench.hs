@@ -2,7 +2,6 @@
 {-# OPTIONS_GHC -fno-warn-orphans -fno-warn-type-defaults #-}
 module Bench where
 import Data.Maybe (fromJust)
-import Control.Arrow ((&&&))
 import qualified Data.Set as S
 import qualified Data.Graph.Inductive as G
 import Text.Show.Functions ()
@@ -54,12 +53,12 @@ solveBinEasy' n = solve (binary n) (replicate (n'+2) 'X' ++ "G(~p&r)")  $ n'+6
 
 -- | fully connected graph of size n (e.g. to benchmark cycle search)
 full :: Int -> Graph String String
-full n = G.mkGraph (map (\x -> (x,S.singleton $ "p"++show x)) [0..n-1])
+full n = G.mkGraph (map (\x -> (x,(S.singleton $ "p"++show x,Nothing))) [0..n-1])
                    [(a,b,[]) | a<-[0..n-1], b<-[0..n-1], a/=b]
 
 -- | binary tree with n nodes and self-loop on rightmost leaf
 binary :: Int -> Graph String String
-binary n = G.mkGraph ((n-1, S.fromList ["q"]):((id &&& const (S.singleton "p")) <$> init ns))
+binary n = G.mkGraph ((n-1, (S.fromList ["q"],Nothing)):(map (\x -> (x,(S.singleton "p",Nothing))) $ init ns))
          $  [(a,b,[]) | a<-ns, b<-ns, b==2*a+1]
          ++ [(a,b,[]) | a<-ns, b<-ns, b==2*a+2]
          ++ [(n-1, n-1, [])]

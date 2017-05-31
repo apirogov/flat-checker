@@ -106,6 +106,7 @@ mkExistsI ind f = mkOr =<< forM ind f
 
 -- | b has one of the a values
 mkAny :: (a -> b -> Z3 AST) -> [a] -> b -> Z3 AST
+mkAny _ [] _ = mkFalse
 mkAny f ls p = mkOr =<< forM ls (flip f p)
 
 -- | if (a ~ b) then f(a) else f(b). ite is MUCH faster than using implications here

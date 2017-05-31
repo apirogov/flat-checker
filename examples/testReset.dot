@@ -1,0 +1,12 @@
+/* Ffin (should not find run!) */
+digraph {
+  1[props="p"];
+  5[props="fin"];
+  0 -> 1;
+  1 -> 2[guards="[x>=0]"];
+  2 -> 3[updates="x:=-5"];
+  3 -> 4[updates="x+=1,y+=1"];
+  4 -> 1;
+  4 -> 5[guards="[y>2]"];
+  5 -> 5;
+}

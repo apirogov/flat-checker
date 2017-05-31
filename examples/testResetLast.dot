@@ -1,0 +1,14 @@
+/* find valid run with last loop that contains resets */
+digraph {
+  1[props="a"];
+  3[props="b"];
+  /* with reset (should work): try Xa */
+  1 -> 2[updates="y+=3,x:=5"];
+  2 -> 1[updates="x+=1",guards="[y>=3,x<7]"]
+  /* without reset (should not work): try Xb */
+  3 -> 4[updates="y+=3"];
+  4 -> 3[updates="x+=1",guards="[y>=3,x<7]"]
+
+  0 -> 1;
+  0 -> 3;
+}

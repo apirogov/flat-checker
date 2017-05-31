@@ -1,0 +1,10 @@
+/* should find a path 0 -> 1 -> 2* with y<3 */
+digraph {
+  0[props="a"];
+  1[props="b"];
+  2[props="c"];
+  0 -> 0[updates="y+=6"];
+  0 -> 1[guards="[x>4],[y>3],[z>5]"];
+  1 -> 2[updates="y+=4", guards="[y>2]"];
+  2 -> 2;
+}
