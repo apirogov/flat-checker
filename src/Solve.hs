@@ -3,7 +3,7 @@ module Solve (
 ) where
 import Data.Data
 import Prelude hiding (log)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Char (isAlphaNum)
 import Control.Arrow (second,(&&&))
 import Control.DeepSeq (($!!))
@@ -20,6 +20,7 @@ import Control.Monad.IO.Class (liftIO)
 import qualified Text.PrettyPrint.Boxes as B
 
 import qualified Data.IntSet as IS
+import qualified Data.Set as S
 import Cycles (getCycleLens)
 import Util
 import Types
@@ -113,6 +114,16 @@ findRun :: (Show a, Show b, Data a, Ord a, Ord b) => SolveConf a b -> Graph a b 
 findRun conf gr = do
   let n = slvSchemaSize conf
   when (n <= 0) $ error "path schema must have positive size!"
+
+  -- sanity check about propositions
+  let gprops = usedProps gr
+  let fprops = mapMaybe getProp $ map fst $ M.toList $ enumerateSubformulas $ slvFormula conf
+      getProp (Prop p) = Just p
+      getProp _ = Nothing
+  forM_ (filter (`S.notMember` gprops) fprops) (\p -> do
+    putStrLn $ "WARNING: Proposition " ++ show p ++ " does not exist in graph!")
+
+  -- prepare graph
   (lens,jtime) <- prepareLoopLens log gr $ slvLoopLens conf
   let gr'   = splitDisjunctionGuards gr
       conf' = conf{slvLoopLens=lens, slvMinimal=False}

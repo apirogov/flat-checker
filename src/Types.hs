@@ -2,7 +2,7 @@
 module Types (
   Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
   Graph, LEdge, EdgeL, ConstraintOp(..), Constraint(..), Update(..),
-  nodes, edges, hasProp, realId, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
+  nodes, edges, usedProps, hasProp, realId, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
 ) where
 -- required for formula
 import Data.Maybe (catMaybes, mapMaybe, fromMaybe)
@@ -113,6 +113,10 @@ hasProp :: (Ord a) => Graph a b -> a -> Int -> Bool
 hasProp gr p n = case G.lab gr n of
   Nothing -> False
   Just ps -> S.member p $ fst ps
+
+-- | propositions used in graph
+usedProps :: (Ord a) => Graph a b -> Set a
+usedProps g = S.unions . map fst . mapMaybe (G.lab g) $ nodes g
 
 -- | if this node is a clone, return id of its original copy (for the user output)
 realId :: Graph a b -> Int -> Int

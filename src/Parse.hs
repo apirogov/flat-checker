@@ -85,7 +85,9 @@ ltlformula = spc *> (try ptru <|> try pfls <|> pprop <|> pnot <|> pnext <|> pfin
         untilop = Until <$> (sym "U" *> parseUConstr)
         release c x y = Not (Until c (Not x) (Not y))
         releaseop = release <$> (sym "R" *> parseUConstr)
-        binop = andop <|> orop <|> untilop <|> releaseop
+        wuntil c x y = Or (Until c x y) (Not (Until Nothing Tru (Not x)))
+        wuntilop = wuntil <$> (sym "WU" *> parseUConstr)
+        binop = andop <|> orop <|> untilop <|> releaseop <|> wuntilop
 
 -- | parse a node label in the dot digraph. filters out the unique set with props
 parsenodel :: Parser (S.Set String)
