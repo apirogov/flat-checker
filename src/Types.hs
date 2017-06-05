@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
-  Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal,
+  Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal, simplify, formulaProps,
   Graph, LEdge, EdgeL, ConstraintOp(..), Constraint(..), Update(..),
   nodes, edges, usedProps, hasProp, realId, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
 ) where
@@ -95,6 +95,64 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 -- | can this formula be evaluated by simple lookup?
 isLocal :: Data a => Formula a -> Bool
 isLocal = any (\f -> has _Next f || has _Until f) . universe
+
+-- | simplify formula by reducing number of AST elements (negations, triviality...)
+simplify :: Formula a -> Formula a
+-- GGp = Gp
+simplify (Not (Until Nothing Tru (Not (Not (Until Nothing Tru (Not f)))))) =
+  simplify $ (Not (Until Nothing Tru (Not f)))
+-- FFp = Fp
+simplify (Until Nothing Tru (Until Nothing Tru f)) = simplify $ Until Nothing Tru f
+
+-- Fp | Fq = F(p | q)
+simplify (Or (Until Nothing Tru f) (Until Nothing Tru g)) =
+  simplify $       Until Nothing Tru $       Or  f g
+-- Gp & Gq = G(p & q)
+simplify (And (Not (Until Nothing Tru (Not f))) (Not (Until Nothing Tru (Not g)))) =
+  simplify $ Not $ Until Nothing Tru $ Not $ And f g
+
+-- DeMorgan ~(~p & ~q) = (p | q), ~(~p | ~q) = (p & q)
+simplify (Not (Not (And (Not f) (Not g)))) = simplify $ Not $ (Or  f g)
+simplify (Not (Not (Or  (Not f) (Not g)))) = simplify $ Not $ (And f g)
+simplify (Not (And (Not f) (Not g))) = simplify (Or  f g)
+simplify (Not (Or  (Not f) (Not g))) = simplify (And f g)
+
+-- ~Xp = X~p and distributivity
+simplify (Not (Next f)) = Next $ simplify $ Not f
+simplify (Or      (Next f) (Next g)) = Next $ simplify $ Or      f g
+simplify (And     (Next f) (Next g)) = Next $ simplify $ And     f g
+simplify (Until c (Next f) (Next g)) = Next $ simplify $ Until c f g
+
+-- trivial cases
+simplify (Not (Not f)) = simplify f
+simplify (Or Fls f) = simplify f
+simplify (Or f Fls) = simplify f
+simplify (And Tru f) = simplify f
+simplify (And f Tru) = simplify f
+simplify (Or Tru _) = Tru
+simplify (Or _ Tru) = Tru
+simplify (And Fls _) = Fls
+simplify (And _ Fls) = Fls
+simplify (Not Tru) = Fls
+simplify (Not Fls) = Tru
+simplify (Next Tru) = Fls
+simplify (Next Fls) = Tru
+simplify (Until _ _ Fls) = Fls
+
+-- push through
+simplify (Until c f g) = Until c (simplify f) (simplify g)
+simplify (Next f)  = Next $ simplify f
+simplify (Not f)   = Not  $ simplify f
+simplify (Or  f g) = Or    (simplify f) (simplify g)
+simplify (And f g) = And   (simplify f) (simplify g)
+simplify (Prop p)  = Prop p
+simplify Tru = Tru
+simplify Fls = Fls
+
+formulaProps :: (Data a, Ord a) => Formula a -> [a]
+formulaProps f = mapMaybe getProp $ map fst $ M.toList $ enumerateSubformulas f
+  where getProp (Prop p) = Just p
+        getProp _ = Nothing
 
 -- | represents counter update for a variable annotated at an edge
 data Update b = UpdateInc b Integer | UpdateEq b Integer deriving (Show, Eq, Ord)

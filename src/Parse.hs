@@ -27,7 +27,8 @@ parseLoopLens str = parse' "Parse error: Could not read supplied list of lengths
 
 -- | parser for formulae
 parseFormula :: String -> Either String (Formula String)
-parseFormula str = parse' "Parse error: Failed to parse formula: " (ltlformula <* eof) str str
+parseFormula str = simplify . simplify
+  <$> parse' "Parse error: Failed to parse formula: " (ltlformula <* eof) str str
 
 -- | reads spaces, but not newlines
 spc :: Parser ()

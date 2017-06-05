@@ -3,7 +3,7 @@ module Solve (
 ) where
 import Data.Data
 import Prelude hiding (log)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Char (isAlphaNum)
 import Control.Arrow (second,(&&&))
 import Control.DeepSeq (($!!))
@@ -117,9 +117,7 @@ findRun conf gr = do
 
   -- sanity check about propositions
   let gprops = usedProps gr
-  let fprops = mapMaybe getProp $ map fst $ M.toList $ enumerateSubformulas $ slvFormula conf
-      getProp (Prop p) = Just p
-      getProp _ = Nothing
+  let fprops = formulaProps $ slvFormula conf
   forM_ (filter (`S.notMember` gprops) fprops) (\p -> do
     putStrLn $ "WARNING: Proposition " ++ show p ++ " does not exist in graph!")
 
