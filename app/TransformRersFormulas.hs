@@ -1,9 +1,10 @@
 module Main where
 
-import Types (Formula(..), simplify)
+import Types (Formula(..), simplify')
 import Control.Arrow
 import Bench (formula)
 
+inout :: Formula String
 inout = Prop "inout"
 
 wrap :: Formula String -> Formula String
@@ -21,4 +22,4 @@ rersify (Until Nothing g h) = Until Nothing (Or (Not inout) $ rersify g) (And in
 rersify _  = error "ERROR: Constrained until not supported here."
 
 main :: IO ()
-main = putStrLn =<< unlines . map (uncurry (\l r -> l++"\t"++r) . second (show . simplify . wrap . rersify . formula) . break (=='\t')) . lines <$> getContents
+main = putStrLn =<< unlines . map (uncurry (\l r -> l++"\t"++r) . second (show . simplify' . wrap . rersify . formula) . break (=='\t')) . lines <$> getContents

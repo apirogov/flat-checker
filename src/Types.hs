@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types (
-  Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal, simplify, formulaProps,
+  Formula(..), enumerateSubformulas, getEvilUntils, subformulas, isLocal, simplify, simplify', formulaProps,
   Graph, LEdge, EdgeL, ConstraintOp(..), Constraint(..), Update(..),
   nodes, edges, usedProps, hasProp, realId, toEdge, edgeLabel, counters, updates, guards, splitDisjunctionGuards
 ) where
@@ -96,8 +96,25 @@ subformulas msubf f = catMaybes $ flip M.lookup msubf <$> children f
 isLocal :: Data a => Formula a -> Bool
 isLocal = any (\f -> has _Next f || has _Until f) . universe
 
+-- reorder if possible
+normalize :: (Ord a) => Formula a -> Formula a
+normalize (And f g) | f' == g' = f' | f' < g' = And f' g' | otherwise = And g' f'
+  where (f',g') = (normalize f, normalize g)
+normalize (Or f g) | f' == g' = f' | f' < g' = Or f' g' | otherwise = Or g' f'
+  where (f',g') = (normalize f, normalize g)
+-- can't swap anything
+normalize (Until c f g) = Until c (normalize f) (normalize g)
+normalize (Next f) = Next $ normalize f
+normalize (Not  f) = Not  $ normalize f
+normalize f = f
+
+simplify' f = obtain $ takeWhile (uncurry (/=)) $ zip fs $ tail fs
+  where fs = iterate (simplify . normalize) f
+        obtain [] = f
+        obtain (x:_) = snd x
+
 -- | simplify formula by reducing number of AST elements (negations, triviality...)
-simplify :: Formula a -> Formula a
+simplify :: (Ord a) => Formula a -> Formula a
 -- GGp = Gp
 simplify (Not (Until Nothing Tru (Not (Not (Until Nothing Tru (Not f)))))) =
   simplify $ (Not (Until Nothing Tru (Not f)))
@@ -138,13 +155,14 @@ simplify (Not Fls) = Tru
 simplify (Next Tru) = Fls
 simplify (Next Fls) = Tru
 simplify (Until _ _ Fls) = Fls
+simplify (Until Nothing _ Tru) = Tru
 
 -- push through
 simplify (Until c f g) = Until c (simplify f) (simplify g)
 simplify (Next f)  = Next $ simplify f
 simplify (Not f)   = Not  $ simplify f
-simplify (Or  f g) = Or    (simplify f) (simplify g)
-simplify (And f g) = And   (simplify f) (simplify g)
+simplify (Or  f g) = Or  (simplify f) (simplify g)
+simplify (And f g) = And (simplify f) (simplify g)
 simplify (Prop p)  = Prop p
 simplify Tru = Tru
 simplify Fls = Fls

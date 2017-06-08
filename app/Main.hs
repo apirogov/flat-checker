@@ -16,7 +16,7 @@ import Solve
 -- | applicative parser for the args given on the command line
 confFromArgs :: Parser (SolveConf String String)
 confFromArgs = SolveConf
-  <$> option (eitherReader parseFormula) (long "formula" <> short 'f' <> metavar "LTL-FORMULA"
+  <$> option (eitherReader ((simplify' <$>) . parseFormula)) (long "formula" <> short 'f' <> metavar "LTL-FORMULA"
     <> help "fLTL-formula to check")
   <*> option auto (long "schema-size" <> short 'n' <> metavar "NUM"
     <> help "Defines the path-schema size")

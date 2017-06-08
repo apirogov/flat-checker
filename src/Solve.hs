@@ -118,7 +118,7 @@ findRun conf gr = do
   -- sanity check about propositions
   let gprops = usedProps gr
   let fprops = formulaProps $ slvFormula conf
-  forM_ (filter (`S.notMember` gprops) fprops) (\p -> do
+  when (slvVerbose conf) $ forM_ (filter (`S.notMember` gprops) fprops) (\p -> do
     putStrLn $ "WARNING: Proposition " ++ show p ++ " does not exist in graph!")
 
   -- prepare graph
