@@ -118,7 +118,7 @@ findRun conf gr = do
   -- sanity check about propositions
   let gprops = usedProps gr
   let fprops = formulaProps $ slvFormula conf
-  when (slvVerbose conf) $ forM_ (filter (`S.notMember` gprops) fprops) (\p -> do
+  when (slvVerbose conf) $ forM_ (filter (`S.notMember` gprops) fprops) (\p ->
     putStrLn $ "WARNING: Proposition " ++ show p ++ " does not exist in graph!")
 
   -- prepare graph
@@ -126,7 +126,7 @@ findRun conf gr = do
   let gr'   = splitDisjunctionGuards gr
       conf' = conf{slvLoopLens=lens, slvMinimal=False}
       findRunFix c = findRun' conf'{slvSchemaSize=c} gr'
-      ns = (takeWhile (<n) $ iterate (*2) 2) ++ [n]
+      ns = takeWhile (<n) (iterate (*2) 2) ++ [n]
       expsearch :: IO (Response, Maybe (Int,Int))
       expsearch = foldM (\lastres (l,r) -> case lastres of
                             (_,Nothing) -> do
@@ -185,7 +185,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   let grd2num = M.fromList $ zip grds [0..] -- mapping from guards in graph to their indices
 
   -- variables to store node ids of path schema
-  (EnumAPI mkFreshNidVar evalNid isNid eqNid) <- (if useIntIds then mkIntEnumSort else mkEnumSort "Nid") $ (nodes gr) ++ [-1]
+  (EnumAPI mkFreshNidVar evalNid isNid eqNid) <- (if useIntIds then mkIntEnumSort else mkEnumSort "Nid") $ nodes gr ++ [-1]
   ids <- mkVarVec mkFreshNidVar "nid" indices
 
   -- | given an edge and a pair of variable node ids, express that they represent this edge
@@ -250,7 +250,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   let lincomb i lc = mkAdd =<< mapM (\(c,var) -> mkMul =<<< [mkInteger c, pure $ at gctrs i $ ctr2num M.! var]) lc
   -- constraint that the variables at position i should respect the given guard
   let opop o = M.fromList [(CGt, mkGt), (CGe, mkGe), (CEq, mkEq), (CLe, mkLe), (CLt, mkLt)] M.! o
-  let respectGuardAt i (t,(lc,v)) = join $ opop t <$> lincomb i lc <*> (mkInteger v)
+  let respectGuardAt i (t,(lc,v)) = join $ opop t <$> lincomb i lc <*> mkInteger v
 
   --------------------------------------------------------------------------------------------------
   -- always start path at node 0
@@ -275,7 +275,7 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   assert =<< mkForallI cindices (\i -> mkEq (at gctrs 0 i) _0)
 
   -- helper: f shall hold with one of the valid loop lengths
-  let withLoopLen i prop = mkExistsI lens (\l -> mkAnd =<<< [join $ mkEq (llen V.! i) <$> (mkInteger $ fromIntegral l), prop l])
+  let withLoopLen i prop = mkExistsI lens (\l -> mkAnd =<<< [join $ mkEq (llen V.! i) <$> mkInteger (fromIntegral l), prop l])
   -- helper: a + C = b
   let isInc c a b = join $ mkEq b <$> (mkAdd =<<< [c, pure a])
   -- helper: a + x*C = b
@@ -288,20 +288,20 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
     let isReset (Just (UpdateEq _ _)) = True
         isReset _ = False
         c = ctr2num M.! ctr
-        es = filter (\e -> isReset $ M.lookup ctr $ updates $ (\(_,_,l) -> l) e) ge
+        es = filter (isReset . M.lookup ctr . updates . (\(_,_,l) -> l)) ge
         isResetEdge = mkAny isEdge (toEdge <$> es)
-    join $ mkIff (clreset V.! c) <$> (mkExistsI (tail indices) (\i ->
-           mkAnd =<<< [mkEq (lcnt V.! i) _0, isResetEdge (ids V.! (i-1),ids V.! i)])))
+    join $ mkIff (clreset V.! c) <$> mkExistsI (tail indices) (\i ->
+           mkAnd =<<< [mkEq (lcnt V.! i) _0, isResetEdge (ids V.! (i-1),ids V.! i)]))
 
   -- general assertions about path schema structure
   assert =<< mkForallI indices (\i -> mkAnd =<<< [
     -- neighboring ids must have valid edge (check that non-looping path is valid)
       ifT (i>0) $ isValidEdge (ids V.! (i-1), ids V.! i)
     -- enforce looptype structure (Out | Start (In*) End)*(Start (In*) End)
-    , ifT (i>0) $ mkAnd =<<< (map join
-        [ mkImplies <$> (isOneOfLT [Out,Start] (lt V.! i)) <*> (isOneOfLT [Out,End]  (lt V.! (i-1)))
-        , mkImplies <$> (isOneOfLT [In,End]    (lt V.! i)) <*> (isOneOfLT [In,Start] (lt V.! (i-1)))
-        ])
+    , ifT (i>0) $ mkAnd =<<< map join
+        [ mkImplies <$> isOneOfLT [Out,Start] (lt V.! i) <*> isOneOfLT [Out,End]  (lt V.! (i-1))
+        , mkImplies <$> isOneOfLT [In,End]    (lt V.! i) <*> isOneOfLT [In,Start] (lt V.! (i-1))
+        ]
 
     -- loop count >= 0 in general
     , mkLe _0 (lcnt V.! i)
@@ -310,33 +310,33 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
     -- loop count = 1 <-> outside of loop
     , join $ mkIff <$> isLtype Out (lt V.! i) <*> mkEq (lcnt V.! i) _1
     -- consistent loopcount in loops
-    , ifT (i>0) $join $ mkImplies <$> isOneOfLT [In,End] (lt V.! i) <*> (mkEq (lcnt V.! i) (lcnt V.! (i-1)))
+    , ifT (i>0) $join $ mkImplies <$> isOneOfLT [In,End] (lt V.! i) <*> mkEq (lcnt V.! i) (lcnt V.! (i-1))
     -- add up all node repetitions to get run length
     , ifT (i>0) $ join $ mkEq (steps V.! i) <$> mkAdd [steps V.! (i-1), lcnt V.! i]
 
     -- outside loops start id is -1 (as dummy)
-    , join $ mkImplies <$> (isLtype Out   (lt V.! i)) <*> (isNid (-1) (lst V.! i))
+    , join $ mkImplies <$> isLtype Out   (lt V.! i) <*> isNid (-1) (lst V.! i)
     -- take loop start id at start from curr id
-    , join $ mkImplies <$> (isLtype Start (lt V.! i)) <*> (eqNid (lst V.! i) (ids V.! i))
+    , join $ mkImplies <$> isLtype Start (lt V.! i) <*> eqNid (lst V.! i) (ids V.! i)
     -- propagate start id forward in loop
-    , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> eqNid (lst V.! (i-1)) (lst V.! i)
+    , ifT (i>0) $ join $ mkImplies <$> isOneOfLT [In,End] (lt V.! i) <*> eqNid (lst V.! (i-1)) (lst V.! i)
 
     -- loop length counter outside of loops is zero
     , join $ mkImplies <$> isLtype Out   (lt V.! i) <*> mkEq (lctr V.! i) _0
     -- loop length counter init at loop start
     , join $ mkImplies <$> isLtype Start (lt V.! i) <*> mkEq (lctr V.! i) _1
     -- loop length counter propagate
-    , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> (isInc (mkInteger 1) (lctr V.! (i-1)) (lctr V.! i))
+    , ifT (i>0) $ join $ mkImplies <$> isOneOfLT [In,End] (lt V.! i) <*> isInc (mkInteger 1) (lctr V.! (i-1)) (lctr V.! i)
 
     -- loop length outside of loops is zero
     , join $ mkImplies <$> isLtype Out (lt V.! i) <*> mkEq (llen V.! i) _0
     -- loop length init at loop end
     , join $ mkImplies <$> isLtype End (lt V.! i) <*> mkEq (lctr V.! i) (llen V.! i)
     -- loop length propagate
-    , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i)) <*> mkEq (llen V.! (i-1)) (llen V.! i)
+    , ifT (i>0) $ join $ mkImplies <$> isOneOfLT [In,End] (lt V.! i) <*> mkEq (llen V.! (i-1)) (llen V.! i)
 
     -- valid backloop
-    , join $ mkImplies <$> isLtype End (lt V.! i) <*> (isValidEdge (ids V.! i, lst V.! i))
+    , join $ mkImplies <$> isLtype End (lt V.! i) <*> isValidEdge (ids V.! i, lst V.! i)
 
     -- the following unrollings enforce that the loops satisfy all until label
     -- conditions, as only such loops can be chosen which don't need to be split
@@ -344,29 +344,32 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
     -- enforce 1x unrolled left (same ids, but outside of loop)
     -- required for checking untils in last loop and the graph guards in all loops
     , join $ mkImplies <$> (mkNot =<< isLtype Out (lt V.! i))
-        <*> (withLoopLen i (\l -> ifF (i-l >= 0) (mkAnd =<<<
+        <*> withLoopLen i (\l -> ifF (i-l >= 0) (mkAnd =<<<
         [ isLtype Out (lt V.! (i-l))
         , eqNid (ids V.! i) (ids V.! (i-l))
         , allEq i (i-l) (snd <$> M.toList sfs) labels
         -- also mark left unrolling of last loop
-        , join $ mkIff <$> (mkEq (lcnt V.! i) _0) <*> (pure $ llast V.! (i-l))
-        ])))
+        , join $ mkImplies <$> mkEq (lcnt V.! i) _0 <*> pure (llast V.! (i-l))
+        ]))
+    -- only mark as left unrolling of last loop correctly
+    , join $ mkImplies <$> pure (llast V.! i) <*> mkExistsI lens
+        (\l -> ifF (i+l<n) $ mkEq _0 $ lcnt V.! (i+l))
 
     -- 2nd left unrolling to check counter resets with guards
     , join $ mkImplies <$> (mkNot =<< isLtype Out (lt V.! i))
-        <*> (withLoopLen i (\l -> ifF (i-2*l >= 0) (mkAnd =<<<
+        <*> withLoopLen i (\l -> ifF (i-2*l >= 0) (mkAnd =<<<
         [ isLtype Out (lt V.! (i-2*l))
         , eqNid (ids V.! i) (ids V.! (i-2*l))
-        ])))
+        ]))
 
     -- enforce 1x unrolled right for efficient normal until checking (unless last loop)
     -- this is required for the regular until to check psi and to check graph guards
-    , join $ mkImplies <$> (mkAnd =<<< [mkNot =<< isLtype Out (lt V.! i), mkNot =<< (mkEq (lcnt V.! i) _0)])
-        <*> (withLoopLen i (\l -> ifF (i+l<=n-1) (mkAnd =<<<
+    , join $ mkImplies <$> (mkAnd =<<< [mkNot =<< isLtype Out (lt V.! i), mkNot =<< mkEq (lcnt V.! i) _0])
+        <*> withLoopLen i (\l -> ifF (i+l<=n-1) (mkAnd =<<<
         [ isLtype Out (lt V.! (i+l))
         , eqNid (ids V.! i) (ids V.! (i+l))
         , allEq i (i+l) (snd <$> M.toList sfs) labels
-        ])))
+        ]))
 
     -- enforce correct graph counter updates and guards
     , ifT (i>0) $ mkForallI ge (\(a,b,l) -> do
@@ -378,13 +381,13 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
               case M.lookup ctr upd of
                 Nothing -> mkEq (at gctrs (i-1) j) (at gctrs i j)
                 Just (UpdateInc _ u) -> isIncMul (mkInteger u) (lcnt V.! (i-1)) (at gctrs (i-1) j) (at gctrs i j)
-                Just (UpdateEq _ v) -> join $ mkEq <$> (mkInteger v) <*> (pure $ at gctrs i j)
+                Just (UpdateEq _ v) -> join $ mkEq <$> mkInteger v <*> pure (at gctrs i j)
             )
             -- guards are respected outside loops. as each loop is unrolled in
             -- both directions and a loop has a constant delta, this is sufficient for finite loops
-          , join $ mkImplies <$> (isLtype Out (lt V.! (i-1))) <*> mkForallI grd (respectGuardAt i)
+          , join $ mkImplies <$> isLtype Out (lt V.! (i-1)) <*> mkForallI grd (respectGuardAt i)
             -- special case for guards inside of last loop -> need unbounded direction <=> good or neutral for all constraints
-          , join $ mkImplies <$> (mkEq _0 (lcnt V.! i)) <*> mkForallI grd (\g@(op,_) ->
+          , join $ mkImplies <$> mkEq _0 (lcnt V.! i) <*> mkForallI grd (\g@(op,_) ->
               (if op==CEq then mkEq else if op `elem` [CGe,CGt] then mkGe else mkLe)
                 (at gdeltas (maxllen-1) $ grd2num M.! g) _0)
           ])
@@ -392,24 +395,24 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
     -- calculate loop deltas for guards
     , mkForallI (M.toList grd2num) $ \((_,(lc,_)), j) -> do
         let i' = n-maxllen+i
-        let calcUpdate k = join $ mkAdd <$> (forM ge $ \(a,b,l) -> do
+        let calcUpdate k = join $ mkAdd <$> forM ge (\(a,b,l) -> do
               let upd = updates l
               let getInc (Just (UpdateInc _ v)) = v
                   getInc _ = 0
-                  incIfNotReset ctr = join $ mkIte (clreset V.! (ctr2num M.! ctr)) _0 <$> (mkInteger $ getInc $ M.lookup ctr upd)
-              join $ mkIte <$> (isEdge (a,b) (ids V.! (k-1), ids V.! k)) <*>
-                (mkAdd =<<< map (\(c,ctr) ->mkMul =<<< [incIfNotReset ctr, mkInteger c]) lc) <*> (pure _0))
+                  incIfNotReset ctr = join $ mkIte (clreset V.! (ctr2num M.! ctr)) _0 <$> mkInteger (getInc $ M.lookup ctr upd)
+              join $ mkIte <$> isEdge (a,b) (ids V.! (k-1), ids V.! k) <*>
+                (mkAdd =<<< map (\(c,ctr) ->mkMul =<<< [incIfNotReset ctr, mkInteger c]) lc) <*> pure _0)
         let update = calcUpdate i'
 
-        ifT (i<maxllen) $ join $ mkIte <$> (mkGt (lcnt V.! i') _0)
+        ifT (i<maxllen) $ join $ mkIte <$> mkGt (lcnt V.! i') _0
           <*> mkEq (at gdeltas i j) _0 -- outside of loop -> 0
-          <*> (join $ mkIte <$> isLtype Start (lt V.! i') -- in last loop: propagate and add as usual to the right
-               <*> ifF (i'>0) (join $ mkEq (at gdeltas i j) <$> update)
-               <*> ifF (i>0)  (isInc update (at gdeltas (i-1) j) (at gdeltas i j))
+          <*> join (mkIte <$> isLtype Start (lt V.! i') -- in last loop: propagate and add as usual to the right
+                <*> ifF (i'>0) (join $ mkEq (at gdeltas i j) <$> update)
+                <*> ifF (i>0)  (isInc update (at gdeltas (i-1) j) (at gdeltas i j))
               )
 
     -- enforce correct until counter updates
-    , mkForallI (M.toList untils) (\((Until (Just (Constraint xs _ _)) _ _), j) -> do
+    , mkForallI (M.toList untils) (\(Until (Just (Constraint xs _ _)) _ _, j) -> do
           -- for each formula in constraint, add its weight if it holds or do nothing
       let calcUpdate k = mkAdd =<< mapM (\(v,w) -> join $ mkIte (at labels k (sfs M.! w)) <$> mkInteger v <*> pure _0) xs
       let i' = n-maxllen+i
@@ -420,18 +423,18 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
         [ ifT (i>0) $ isIncMul (calcUpdate $ i-1) (lcnt V.! (i-1)) (at udctrs (i-1) j) (at udctrs i j)
           -- counter update for witness counters. count updates just once, but synchronize after loops with delta counters
         , ifT (i>0) $ join $
-            mkIte <$> (isLtype End (lt V.! (i-1)))
-                  <*> (mkEq (at udctrs i j) (at uwctrs i j))
-                  <*> (isInc (calcUpdate $ i-1) (at uwctrs (i-1) j) (at uwctrs i j))
+            mkIte <$> isLtype End (lt V.! (i-1))
+                  <*> mkEq (at udctrs i j) (at uwctrs i j)
+                  <*> isInc (calcUpdate $ i-1) (at uwctrs (i-1) j) (at uwctrs i j)
 
 
           -- accumulate loop deltas for last loop (we have only maxllen positions, at right of the schema)
         , ifT (i<maxllen) $ mkAnd =<<<
           [ join $ mkImplies <$> isLtype Out (lt V.! i') <*> mkEq (at ldeltas i j) _0 -- outside of loop -> 0
-          , join $ mkImplies <$> (mkEq (lcnt V.! i') _0) <*> (mkAnd =<<<              -- in last loop:
+          , join $ mkImplies <$> mkEq (lcnt V.! i') _0 <*> (mkAnd =<<<              -- in last loop:
             -- propagate and add as usual to the right
-            [ join $ mkImplies <$> isLtype Start (lt V.! i') <*> (join $ mkEq (at ldeltas i j) <$> (calcUpdate i'))
-            , ifT (i>0) $ join $ mkImplies <$> (isOneOfLT [In,End] (lt V.! i')) <*> (isInc (calcUpdate i') (at ldeltas (i-1) j) (at ldeltas i j)) ])
+            [ join $ mkImplies <$> isLtype Start (lt V.! i') <*> join (mkEq (at ldeltas i j) <$> calcUpdate i')
+            , ifT (i>0) $ join $ mkImplies <$> isOneOfLT [In,End] (lt V.! i') <*> isInc (calcUpdate i') (at ldeltas (i-1) j) (at ldeltas i j) ])
           ]
         ]
       )
@@ -471,14 +474,14 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
               ]
 
           u@(Until (Just (Constraint _ op c)) a b) -> do -- this is the linear constraint until
-            let reg = sfs M.! (Until Nothing a b) -- get id of normal Until of this kind (we always have both!)
+            let reg = sfs M.! Until Nothing a b   -- get id of normal Until of this kind (we always have both!)
                 phi = sfs M.! a
                 psi = sfs M.! b
                 k   = untils M.! u                -- get index of this evil until in evil until list
             -- φU[c]ψ <-> φUψ ∧ [c] holds (we check this only outside of loops, unrollings ensure correct label inside)
-            join $ mkImplies <$> (isLtype Out (lt V.! i)) <*> lbl_ij_equiv_to (mkAnd =<<<
+            join $ mkImplies <$> isLtype Out (lt V.! i) <*> lbl_ij_equiv_to (mkAnd =<<<
               [ pure $ lbl i reg   -- φUψ holds, and ...
-              , let satisfiesConstraint var = (opop op) var =<< mkAdd =<<< [mkInteger c, pure $ at uwctrs i k]
+              , let satisfiesConstraint var = opop op var =<< mkAdd =<<< [mkInteger c, pure $ at uwctrs i k]
                     strictlyGoodLoop = (if op `elem` [CGt,CGe] then mkGt else mkLt) (at ldeltas (maxllen-1) k) _0
                 in  mkOr =<<<
                         -- when ψ holds, we can check constraint directly, or...
@@ -492,12 +495,12 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
       )
     ])
 
-  assert =<< mkForallI (M.toList untils) (\((Until (Just (Constraint xs op _)) a b), j) -> do
+  assert =<< mkForallI (M.toList untils) (\(Until (Just (Constraint xs op _)) a b, j) -> do
     let (phi, psi) = (sfs M.! a, sfs M.! b)
         coefsum = abs $ sum $ map fst xs
         -- the invalid base value to start with for the given constraint
-        invalid = if op==CGt || op==CGe then -coefsum else if op==CLt || op==CLe then coefsum
-                  else error "ERROR: equality constraint in formula!"
+        invalid | op==CGt || op==CGe = -coefsum | op==CLt || op==CLe = coefsum
+                | otherwise = error "ERROR: equality constraint in formula!"
         -- worst possible value that can be reached (semantically a bottom)
         bottom = mkMul =<<< [pure $ steps V.! (n-1), mkInteger invalid]
         -- depending on the constraints, we want a maximal or minimal witness
@@ -507,18 +510,18 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
 
     mkAnd =<<<
       [ -- lallphi_j <-> in the last loop all positions have phi for U[r]_j
-        join $ mkIff (lallphi V.! j) <$> (mkForallI [n-maxllen..n-1] (\i ->
-          mkOr =<<< [pure $ at labels i phi, mkGt (lcnt V.! i) _0]))
+        join $ mkIff (lallphi V.! j) <$> mkForallI [n-maxllen..n-1] (\i ->
+          mkOr =<<< [pure $ at labels i phi, mkGt (lcnt V.! i) _0])
 
         -- calculate counter suffix max/min: start with bottom, if not psi, else current value ...
-      , join $ mkIte (at labels (n-1) psi) <$> (mkEq (at ucsufbest (n-1) j) (at uwctrs (n-1) j))
+      , join $ mkIte (at labels (n-1) psi) <$> mkEq (at ucsufbest (n-1) j) (at uwctrs (n-1) j)
                                            <*> (mkEq (at ucsufbest (n-1) j) =<< bottom)
 
         -- then, at psi positions take best of current and future, otherwise just push through, reset when chain broken
       , mkForallI (init indices) (\i -> join $
-          mkIte <$> (ifF (i>0) $ pure $ at labels (i-1) phi)
-            <*> (join $ mkIte (at labels i psi) <$> ((keepBetterFor op) (at ucsufbest (i+1) j) (at uwctrs i j)) (mkEq (at ucsufbest i j))
-                                                <*> (mkEq (at ucsufbest i j) (at ucsufbest (i+1) j)))
+          mkIte <$> ifF (i>0) (pure $ at labels (i-1) phi)
+            <*> join (mkIte (at labels i psi) <$> keepBetterFor op (at ucsufbest (i+1) j) (at uwctrs i j) (mkEq (at ucsufbest i j))
+                                              <*> mkEq (at ucsufbest i j) (at ucsufbest (i+1) j))
             <*> (mkEq (at ucsufbest i j) =<< bottom))
       ])
 
@@ -539,10 +542,10 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   log "Searching..."
   result <- fmap snd $ withModel $ \m -> do
     let getVec :: (Model -> b -> Z3 (Maybe a)) -> Vector b -> Z3 (Vector a)
-        getVec evalfunc vec = fromMaybe V.empty <$> (V.sequence <$> (mapM (evalfunc m) vec))
+        getVec evalfunc vec = fromMaybe V.empty <$> (V.sequence <$> mapM (evalfunc m) vec)
 
         getMat :: EvalAst Z3 a -> Vector (Vector AST) -> Z3 (Vector (Vector a))
-        getMat fun mat = fromMaybe V.empty . V.sequence <$> V.forM mat (\row -> mapEval fun m row)
+        getMat fun mat = fromMaybe V.empty . V.sequence <$> V.forM mat (mapEval fun m)
 
     idvals <- getVec evalNid ids
     ltvals <- getVec evalLT lt
@@ -587,13 +590,13 @@ findRun' (SolveConf f n _ lens useIntIds useBoolLT _ _ verbose debug) gr = evalZ
   end2 <- currTime
   let timeUsed = msTimeDiff start2 end2
   log $ "Finished after: "++showTime start2 end2
-  let showFun = maybe (const "") (\r -> showRun f gr r) result
+  let showFun = maybe (const "") (showRun f gr) result
   return $ Response 0 ctime fSize (sum $ snd <$> vNums) timeUsed result showFun
   where log = when verbose . liftIO . putStrLn
 
 -- | generate pretty-printed run string for output
 showRun :: (Data a, Ord a, Ord b, Show a, Show b) => Formula a -> Graph a b -> Run -> Maybe Int -> String
-showRun f g run width = B.render $ B.vcat B.top $ rows -- ++[B.text $ show gd]
+showRun f g run width = B.render $ B.vcat B.top rows -- ++[B.text $ show gd]
   where rv = runPos run
         lp = runLAllPhi run
         ld = runLDelta run
@@ -601,7 +604,7 @@ showRun f g run width = B.render $ B.vcat B.top $ rows -- ++[B.text $ show gd]
         r = V.toList rv
         ctrs = counters g
 
-        mkCol name cells = (B.text name) B.// (B.vcat B.top cells)
+        mkCol name cells = B.text name B.// B.vcat B.top cells
         addLT fun p = (fun p, posLType p)
         showIfLoop (_,Out) = ""
         showIfLoop (a,_) = show a
@@ -621,14 +624,13 @@ showRun f g run width = B.render $ B.vcat B.top $ rows -- ++[B.text $ show gd]
         --         else mkCol "[(UD,UW,UM)_j]" $ (map (B.text . show . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSBest p))) r) ++ [lastloopinfo]
         uctrs = if V.null ld then B.nullBox
                 else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose
-                     $ (map (B.text . show) untils):
-                       (map (map (B.text . show) . V.toList . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSBest p))) r)
-                       ++[lastloopinfo]
+                     $ map (B.text . show) untils:
+                       map (map (B.text . show) . V.toList . (\p -> V.zip3 (posUDCtrs p) (posUWCtrs p) (posUSBest p))) r ++ [lastloopinfo]
         lastloopinfo = map B.text $ V.toList $ V.zipWith (\a b->a++"/"++b) (V.map show lp) (V.map goodness ld)
 
         -- show graph counter col if any counters present
-        gctrs = if V.null (posGCtrs $ V.head $ rv) then B.nullBox
-                else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose $ ctrhdr:(map ((B.text "" :) . map (B.text . show) . V.toList . posGCtrs) r)
+        gctrs = if V.null (posGCtrs $ V.head rv) then B.nullBox
+                else B.hsep 1 B.left $ map (B.vcat B.top) $ transpose $ ctrhdr : map ((B.text "" :) . map (B.text . show) . V.toList . posGCtrs) r
         ctrhdr = B.text "GC:" : (B.text . filter isAlphaNum . show <$> ctrs)
 
         lblock = map B.text $ lines $ B.render $ B.hsep 1 B.left [num,sep,ids,lts,lst,lln,lcs, uctrs, gctrs]
@@ -640,7 +642,7 @@ showRun f g run width = B.render $ B.vcat B.top $ rows -- ++[B.text $ show gd]
 
         lbl = B.text "Labels:" : map (labelfunc . lbls . posLbls) r
         lblids = map fst . filter snd . zip [0..] . V.toList
-        lbls = intercalate ", " . sortOn (\s -> (length s, s)) . map show . map (isfs M.!) . lblids
+        lbls = intercalate ", " . sortOn (\s -> (length s, s)) . map (show . (isfs M.!)) . lblids
         isfs = M.fromList $ map (\(a,b) -> (b,a)) $ M.toList sfs --to map indices back to subformulas
 
         rows = zipWith (\a b -> B.hsep 4 B.top [a,b]) lblock (lbl++[B.nullBox])

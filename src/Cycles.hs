@@ -68,8 +68,8 @@ johnsonWith f = do
         let s = head k -- scc can not be empty -> operation safe
             ak = G.subgraph k g
         js .= s
-        jBlocked %= \bl -> bl V.// (zip k $ repeat False)
-        jB       %= \b  -> b  V.// (zip k $ repeat IS.empty)
+        jBlocked %= \bl -> bl V.// zip k (repeat False)
+        jB       %= \b  -> b  V.// zip k (repeat IS.empty)
         _ <- circuit ak s s f
         jG %= G.delNode s
         js += 1
@@ -90,7 +90,7 @@ circuit ak s v rf = do
     if w==s then do
       use jNodeStack >>= \ns -> jCycles %= rf ns      --   report cycle
       return True
-    else if (not blockedw) then
+    else if not blockedw then
       circuit ak s w rf
     else
       return False

@@ -11,6 +11,7 @@ import Data.List (sortOn)
 import qualified Data.Map as M
 import Data.Data
 
+import Control.Applicative
 import Control.Monad.State
 import Control.Lens.Plated
 import Control.Lens.Fold
@@ -75,7 +76,7 @@ addFormula f = modify addIfNew
 
 -- | post-order traversal collecting all subformulas
 enumerateSubformulas :: (Ord a,Data a) => Formula a -> Map (Formula a) Int
-enumerateSubformulas = snd . (flip execState (0,M.empty)) . go
+enumerateSubformulas = snd . (`execState` (0,M.empty)) . go
   where go f@(Until (Just _) g h) = traverseOf_ plate go f
         -- to label constraint until correctly, we also need the normal one!
                                   *> addFormula (Until Nothing g h) *> addFormula f
@@ -117,7 +118,7 @@ simplify' f = obtain $ takeWhile (uncurry (/=)) $ zip fs $ tail fs
 simplify :: (Ord a) => Formula a -> Formula a
 -- GGp = Gp
 simplify (Not (Until Nothing Tru (Not (Not (Until Nothing Tru (Not f)))))) =
-  simplify $ (Not (Until Nothing Tru (Not f)))
+  simplify $ Not (Until Nothing Tru (Not f))
 -- FFp = Fp
 simplify (Until Nothing Tru (Until Nothing Tru f)) = simplify $ Until Nothing Tru f
 
@@ -129,8 +130,8 @@ simplify (And (Not (Until Nothing Tru (Not f))) (Not (Until Nothing Tru (Not g))
   simplify $ Not $ Until Nothing Tru $ Not $ And f g
 
 -- DeMorgan ~(~p & ~q) = (p | q), ~(~p | ~q) = (p & q)
-simplify (Not (Not (And (Not f) (Not g)))) = simplify $ Not $ (Or  f g)
-simplify (Not (Not (Or  (Not f) (Not g)))) = simplify $ Not $ (And f g)
+simplify (Not (Not (And (Not f) (Not g)))) = simplify $ Not $ Or  f g
+simplify (Not (Not (Or  (Not f) (Not g)))) = simplify $ Not $ And f g
 simplify (Not (And (Not f) (Not g))) = simplify (Or  f g)
 simplify (Not (Or  (Not f) (Not g))) = simplify (And f g)
 
@@ -168,7 +169,7 @@ simplify Tru = Tru
 simplify Fls = Fls
 
 formulaProps :: (Data a, Ord a) => Formula a -> [a]
-formulaProps f = mapMaybe getProp $ map fst $ M.toList $ enumerateSubformulas f
+formulaProps f = mapMaybe (getProp . fst) $ M.toList $ enumerateSubformulas f
   where getProp (Prop p) = Just p
         getProp _ = Nothing
 
@@ -251,7 +252,7 @@ cloneNode n = do
   case G.lab g n of
     Nothing -> error "something went wrong, node not labelled!"
     Just (ps,orig) -> do
-      put $ G.insEdges outes $ G.insNode (n', (ps, maybe (Just n) Just orig)) g
+      put $ G.insEdges outes $ G.insNode (n', (ps, orig <|> Just n)) g
       return n'
 
 -- | clone edges for each case of disjunction, keep same updates

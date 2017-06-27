@@ -1,8 +1,8 @@
 module Main where
 
-import Types (Formula(..), simplify')
 import Control.Arrow
-import Bench (formula)
+import Types (Formula(..), simplify')
+import Util (formula)
 
 inout :: Formula String
 inout = Prop "inout"

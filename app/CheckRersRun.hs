@@ -3,6 +3,7 @@ import System.Environment (getArgs)
 import System.IO.Temp (withSystemTempFile)
 import System.Process
 import System.IO (hPutStrLn, hClose, hFlush, stdout)
+import System.Exit (ExitCode(..))
 import Data.Char (toLower)
 import Data.List (sort, nub, intercalate)
 import Data.Maybe (isJust, fromJust)
@@ -48,7 +49,7 @@ makeDot f (l,r) = "//Check with: " ++ show f ++ "\ndigraph {\n"
 -- | given formula and a run, produce a promela file encoding that task
 makePml :: Formula String -> RunRep -> String
 makePml _ ([],[]) = error "ERROR: Empty run"
-makePml f ([],(r:rs)) = makePml f ([r],rs++[r])
+makePml f ([],r:rs) = makePml f ([r],rs++[r])
 makePml f r@(l:ll,rr) = "//Alphabet:\n" ++ decls ++ "\n//Initial state:\nbyte _prop = "++l++";\n"
   ++ "// w = "++show r++"\n"++"active proctype runproc() {\n"++row
   ++"\tdo :: {\n"++lasso++"\t} od\n}\n//formula = "++show f ++"\nltl formula {"++fltlToPltl f++"}"
@@ -90,22 +91,25 @@ checkWithSpin num f r = withSystemTempFile "spinjob" $ \filename h -> do
   putStr $ show num ++ " "
   hPutStrLn h $ makePml f r
   hClose h
-  putStrLn $ show f
+  print f
   -- putStrLn $ makePml f r
   putStrLn $ fltlToPltl f
-  putStrLn $ show r
+  print r
   hFlush stdout
-  (_,out,_) <- readProcessWithExitCode "spin" ["-search", filename] ""
+  -- (_,out,_) <- readProcessWithExitCode "spin" ["-search", filename] ""
+  (ec,out,_) <- readProcessWithExitCode "timeout" ["1d", "spin", "-search", filename] ""
   let ls = lines out
       (l1:l2:_) = ls
   let violated l = length l > 2 && ("violated" == words l !! 2)
   let acccycle l = length l > 2 && ("acceptance" == words l !! 1)
-  if violated l1 || acccycle l1 then do
-    _ <- readProcess "rm" [(words l2) !! 2] "" -- remove .trail file
+  if ec == ExitFailure 124 then
+    putStrLn "failed falsification (timeout)"
+  else if violated l1 || acccycle l1 then do
+    _ <- readProcess "rm" [words l2 !! 2] "" -- remove .trail file
     putStrLn $ init $ unlines $ take 2 ls
     putStrLn "successfully falsified formula.\n"
   else do
-    putStrLn $ init $ out
+    putStrLn $ init out
     putStrLn "failed falsification of formula with given run.\n"
 
 -- | Input: Numbered list of flat-checker parsable formulas, numbered list of the counterexamples
@@ -124,7 +128,7 @@ main = do
   fs <- (M.map parseFormula' . toMap) <$> readFile ffile
   rs <- (M.map parseRun . toMap) <$> readFile rfile
   case num of
-    Nothing -> forM_ (M.keys $ M.filter isJust $ rs) $ \n ->
+    Nothing -> forM_ (M.keys $ M.filterWithKey (\k _ -> k `M.member` fs) $ M.filter isJust rs) $ \n ->
       check n (fs M.! n) (fromJust $ rs M.! n)
     Just n -> do
       let (f,r) = (fs M.! n, rs M.! n)

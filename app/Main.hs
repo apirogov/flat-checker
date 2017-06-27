@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Main where
 import Data.Data (Data)
+import Data.Monoid ((<>))
 import Data.Time (getCurrentTime)
 import Language.Haskell.TH (stringE, runIO)
 import System.IO (hSetBuffering, BufferMode(..), stdout)

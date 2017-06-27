@@ -1,7 +1,7 @@
 {-# LANGUAGE RankNTypes, ExistentialQuantification #-}
 module Util where
 import Control.Monad.IO.Class (liftIO, MonadIO)
-import Control.Monad (replicateM, forM, join)
+import Control.Monad (replicateM, forM, zipWithM, join)
 import Data.List (intercalate)
 
 import Z3.Monad
@@ -9,6 +9,10 @@ import qualified Data.Map as M
 import qualified Data.Vector as V
 
 import System.Clock
+
+import Data.Maybe (fromJust)
+import Parse
+import Types
 
 -- | access 2-indexed variable
 at :: V.Vector (V.Vector a) -> Int -> Int -> a
@@ -31,7 +35,7 @@ showTime a b = show (msTimeDiff a b) ++ " ms"
 -- | declare finite ID domain inside Z3
 mkEnum :: Show a => String -> String -> [a] -> Z3 Sort
 mkEnum sname spref is = join $ mkDatatype <$> mkStringSymbol sname <*> forM is makeconst
-  where makeconst i = join $ mkConstructor <$> mkStringSymbol (spref++(show i)) <*> mkStringSymbol (spref++(show i)) <*> pure []
+  where makeconst i = join $ mkConstructor <$> mkStringSymbol (spref++show i) <*> mkStringSymbol (spref++show i) <*> pure []
 
 -- | variable constructor, evaluator and list of constructor symbols
 data EnumAPI a = forall b. EnumAPI
@@ -51,8 +55,8 @@ mkEnumSort name is = do
         ret <- modelEval m sym True
         case ret of
           Nothing -> return Nothing
-          Just v -> astToString v >>= return . Just . read . drop (length name)
-  constrs <- mapM (flip mkApp []) enumConst
+          Just v -> Just . read . drop (length name) <$> astToString v
+  constrs <- mapM (`mkApp` []) enumConst
   let cmap = M.fromList $ zip is constrs
   return $ EnumAPI mkFreshNodeVar evalEnum (mkEq . (cmap M.!)) mkEq
 
@@ -77,7 +81,7 @@ mkBoolEnumSort is = do
   _F <- mkFalse
   let n = length is
       bits = (log $ fromIntegral n) :: Double
-      lbits = (2::Integer)^((floor bits)::Integer)
+      lbits = (2::Integer)^(floor bits :: Integer)
       m = fromIntegral $ if lbits < fromIntegral n then ceiling bits else lbits
       comb = replicateM m [False,True]  -- 0,0 / 0,1 / 1,0 / 1,1 ... for fixed length
       ism = M.fromList $ zip is comb    -- given value -> combination
@@ -91,7 +95,7 @@ mkBoolEnumSort is = do
       -- compare to fixed value <-> check for its combination
       isBE a b = mkAnd =<< mapM (\(bv,v) -> mkEq bv $ if v then _T else _F) (zip b (ism M.! a))
       -- compare equality <-> bitwise
-      eqBE a b = mkAnd =<< mapM (\(c,d) -> mkEq c d) (zip a b)
+      eqBE a b = mkAnd =<< zipWithM mkEq a b
   return $ EnumAPI mkBE evalBE isBE eqBE
 
 -- | sugar, expand quantifiers over variables where all possible values are
@@ -107,7 +111,7 @@ mkExistsI ind f = mkOr =<< forM ind f
 -- | b has one of the a values
 mkAny :: (a -> b -> Z3 AST) -> [a] -> b -> Z3 AST
 mkAny _ [] _ = mkFalse
-mkAny f ls p = mkOr =<< forM ls (flip f p)
+mkAny f ls p = mkOr =<< forM ls (`f` p)
 
 -- | if (a ~ b) then f(a) else f(b). ite is MUCH faster than using implications here
 mkWithCmp :: (AST -> AST -> Z3 AST) -> AST -> AST -> (AST -> Z3 AST) -> Z3 AST
@@ -125,7 +129,7 @@ ifF True f = f
 
 -- | generate a variable name from prefix and a list of indices
 varname :: (Show i) => String -> [i] -> String
-varname pref ind = intercalate "_" $ pref:(map show ind)
+varname pref ind = intercalate "_" $ pref:map show ind
 
 -- | allocate a vector of variable symbols with given prefix, indexed over is
 mkVarVec :: (Show i) => (String -> Z3 a) -> String -> [i] -> Z3 (V.Vector a)
@@ -134,3 +138,11 @@ mkVarVec mkf name is = V.fromList <$> forM is (\i -> mkf $ varname name [i])
 -- | allocate a matrix of variable symbols with given prefix, indexed over is and js
 mkVarMat :: (Show i, Show j) => (String -> Z3 a) -> String -> [i] -> [j] -> Z3 (V.Vector (V.Vector a))
 mkVarMat mkf name is js = V.fromList <$> forM is (\i -> mkVarVec mkf (varname name [i]) js)
+
+-- | parse formula. exception on failure, use with care
+formula :: String -> Formula String
+formula = fromJust . either (const Nothing) Just . parseFormula
+
+-- | parse graph in dot format. exception on failure.
+dotFromFile :: FilePath -> IO (Graph String String)
+dotFromFile f = parseDot' <$> readFile f
