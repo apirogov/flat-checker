@@ -1,7 +1,7 @@
 module Main where
 
 import Control.Arrow
-import Types (Formula(..), simplify')
+import Types (Formula(..), Constraint(..), simplify')
 import Util (formula)
 
 inout :: Formula String
@@ -18,8 +18,10 @@ rersify (Not f) = Not $ rersify f
 rersify (And f g) = And (rersify f) (rersify g)
 rersify (Or f g) = Or (rersify f) (rersify g)
 rersify (Next g)  = Next $ Until Nothing (Not inout) $ And inout (rersify g)
-rersify (Until Nothing g h) = Until Nothing (Or (Not inout) $ rersify g) (And inout $ rersify h)
-rersify _  = error "ERROR: Constrained until not supported here."
+rersify (Until c g h) = Until (rersifyC c) (Or (Not inout) $ rersify g) (And inout $ rersify h)
+  where rersifyC Nothing = Nothing
+        rersifyC (Just (Constraint fs op k)) = Just (Constraint fs' op k)
+          where fs' = map (second (And inout . rersify)) fs
 
 main :: IO ()
 main = putStrLn =<< unlines . map (uncurry (\l r -> l++"\t"++r) . second (show . simplify' . wrap . rersify . formula) . break (=='\t')) . lines <$> getContents
